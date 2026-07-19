@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# macOS
+.DS_Store
+
+# Model weights — auto-downloaded on first run (too big for git)
+*.pt
+*.pth
+*.onnx
+# keep the small MediaPipe models that ship with the kit:
+!weights/*.task
+
+# Runtime outputs
+feed/
+live_captures/
+*.jsonl
+*.mp4
+*.jpg
+*.jpeg
+
+# Arduino build output
+build/
+*.bin
