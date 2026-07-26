@@ -1,27 +1,49 @@
-# Python
-__pycache__/
-*.pyc
-.venv/
-venv/
-
-# macOS
-.DS_Store
-
-# Model weights — auto-downloaded on first run (too big for git)
-*.pt
-*.pth
-*.onnx
-# keep the small MediaPipe models that ship with the kit:
-!weights/*.task
-
-# Runtime outputs
+# --- session output -------------------------------------------------------
+# Every run writes findings and sweeps here. It is DATA, not source: large,
+# per-session, and two people's runs would conflict on every file. Archive a
+# session by copying the folder out, not by committing it.
+session_feed/
 feed/
 live_captures/
 *.jsonl
-*.mp4
 *.jpg
 *.jpeg
+*.mp4
 
-# Arduino build output
+# --- build artefacts of the motion library --------------------------------
+# The CSVs in motion/clips/ ARE committed: they are what the robot plays, and a
+# colleague without Blender still needs them. What is excluded is Blender's own
+# churn -- .blend1 is an automatic backup of the previous save -- and the render
+# videos, which are megabytes that no code reads.
+*.blend1
+*.blend2
+motion/renders/
+
+# --- python ---------------------------------------------------------------
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# --- model checkpoints ----------------------------------------------------
+# The two MediaPipe .task files ARE committed (9 MB, and the perception layer
+# will not start without them). YOLO weights are not: ultralytics fetches them
+# on first use and they differ per --detector choice.
+*.pt
+*.pth
+*.onnx
+!perception/weights/*.task
+
+# --- but the CAD and the plan renders in a sweep are wanted ---------------
+!robot/cad/**/*.stl
+!robot/cad/**/*.step
+
+# --- arduino / os / editor ------------------------------------------------
 build/
 *.bin
+.DS_Store
+.idea/
+.vscode/
+*.swp

@@ -1,11 +1,21 @@
-# core pipeline
+# ---- core pipeline -------------------------------------------------------
 opencv-python
 numpy
-requests
-anthropic          # VLM planner + judge
-mediapipe          # FaceLandmarker / PoseLandmarker (tasks API; models auto-download)
-ultralytics        # YOLO / YOLO-World object detector
-pyserial           # pan-tilt rig
-# optional
-transformers       # Grounding DINO (--detector gdino)
-matplotlib         # make_report_figures.py
+anthropic            # the VLM planner and the story narrator
+mediapipe            # FaceLandmarker / PoseLandmarker (models in perception/weights/)
+ultralytics          # YOLO and YOLO-World detectors (weights auto-download)
+
+# ---- the robot -----------------------------------------------------------
+pyserial             # the CoreS3 link
+feetech-servo-sdk    # SCS0009 bus. NOTE: the pip name is feetech-servo-sdk but
+                     # the import name is `scservo_sdk`. `scservo-sdk` does not
+                     # exist on PyPI -- installing that gets you nothing.
+
+# ---- speech --------------------------------------------------------------
+sounddevice          # push-to-talk capture on the laptop mic
+faster-whisper       # transcription. The first call downloads the model, which
+                     # takes longer than the state machine's STT timeout -- the
+                     # loop warms it at startup so no participant ever waits.
+
+# ---- optional ------------------------------------------------------------
+transformers         # only for --detector gdino (Grounding DINO)

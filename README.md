@@ -1,50 +1,129 @@
-# Potatobot
+# NoticeBot
 
-Pipeline: `context (typed) → VLM planner (planner.py) → watch-spec → CV executor
-(relations.py + watch_exec.py) → records + web UI (attention_ui.py)`. The VLM is a
-compiler/auditor, **not** per-frame. Vocabulary: `docs/relation_table.md`.
+A desk robot that watches for one thing you asked it to watch for, and tells you
+when it happens.
 
-## 1. Install
+You say *"the roundtable area at my lab — people usually have meetings here."*
+The robot turns its head across the room, photographs each angle, and sends all
+of them to a VLM in a **single** call. The VLM enumerates what is there, sorts it
+into what matters and what is only context, and compiles your sentence into a
+**watch-spec** over an eleven-row vocabulary of social relations (gaze, joint
+attention, pointing, F-formation, turn-taking …). CV then evaluates that spec
+frame by frame, at the angle that looked richest. When the spec is satisfied the
+robot collects a short photo story of the moment and looks up at you.
+
+The contribution is not the detection. It is that **you can read and argue with
+what it decided to watch for** — the compiled spec is on screen, each row lit as
+it becomes true.
+
+---
+
+## The hardware this repo is for
+
+This is v2, the 3-DOF lamp form. Nothing here supports the earlier Arduino R4
+pan-tilt rig or the UnitCam S3 head; that code has been removed.
+
+| | |
+|---|---|
+| Neck | 3 × Feetech **SCS0009** serial-bus servos — pan / tilt / nod |
+| Bus | **FE-URT2-C001** USB↔TTL adapter, 1 Mbaud, external 5–6 V on the servo rail |
+| Head camera | **InnoMaker OV4688** UVC module, 4 MP, H-FOV 58° |
+| Face | **M5Stack CoreS3** — screen, speaker, TTP223 body-tap sensor |
+| Antenna | Grove Chainable RGB LED (P9813) on CoreS3 Port B |
+| Body | printed lamp form — `robot/cad/stl/` |
+| Brain | your laptop. Everything runs here; the boards are I/O. |
+
+---
+
+## Running it
+
+**On a new machine, start at `docs/GETTING_STARTED.md`.** It walks the three
+tiers below in order, and it is written so you can stop at whichever one your
+question lives in.
 
 ```bash
-python -m venv .venv && source .venv/bin/activate      # or conda, python 3.10+
 pip install -r requirements.txt
-export ANTHROPIC_API_KEY=sk-...                         # for the planner + judge
+
+# tier 0 — logic only, no hardware at all
+python3 tests/test_session_flow.py
+
+# tier 1 — MOTION ONLY. Servos and nothing else: no camera, no VLM, no API key.
+export NOTICEBOT_PORT=/dev/cu.usbmodemXXXXX     # robot/tools/check_bus.py finds it
+python3 robot/clip_player.py S7a                # one state
+python3 robot/clip_player.py                    # the whole designed cycle
+python3 robot/clip_player.py --all --cores3     # every state, with LED and sound
+
+# tier 2 — the full loop
+export ANTHROPIC_API_KEY=sk-...
+python3 noticebot_loop.py --cam 0 --cores3 --serve      # then localhost:8000
 ```
 
-Auto-downloads on first run (no action needed): YOLO weights (`ultralytics`), and — if you
-delete them — the two MediaPipe `.task` models (already shipped in `weights/`). Grounding DINO
-downloads only if you pass `--detector gdino` (needs `transformers`).
+Tier 1 is the one to use when the question is about the movement. Do not debug a
+motion problem from tier 2, where it looks like a perception problem.
 
-## 2. Hardware (optional — also runs on a laptop webcam)
+Before trusting a session: `python3 robot/tools/preflight.py` — a GO / NO-GO
+check with numeric criteria.
 
-Flash from `firmware/` with the Arduino IDE:
+---
 
-- **`pantilt_r4/`** → Arduino Uno R4 + 2× MG90S (pan-tilt). Serial
-  `/dev/cu.usbmodem*` @115200.
-- **`cores3_sidekick/`** → M5 CoreS3 I/O board (screen / sound / touch)
+## What is where
 
-macOS serial: use `/dev/cu.*` (not `tty.*`); close the Arduino Serial Monitor first.
-
-## 3. Run one round
-
-```bash
-# edit this file live and the system re-plans on the next frame
-echo "Two of us are assembling a robot arm this afternoon." > context.txt
-
-# A) laptop webcam, keyless dry run (fake planner, no API key) 
-python attention_system.py --offline --camera 0 --serve
-
-# B) real planner, laptop webcam + web UI  (open the printed localhost URL)
-python attention_system.py --camera 0 --serve --save --plan-frame
-
-# C) full robot: M5 camera + pan-tilt + CoreS3
-python attention_system.py --serve --save --plan-frame \
-       --rig --port /dev/cu.usbmodem101 --cores3 /dev/cu.usbmodem1101
+```
+noticebot_loop.py   the conductor — the only long-running process
+robot/              servos: bus, calibration, clip playback, firmware, CAD
+motion/             the movement design: Blender sources, generators, clips
+perception/         CV: detectors, pose, the 11-row relation engine
+planning/           VLM: the planner, the relevance layer, the sweep
+session/            the state machine, speech, storyboard, CoreS3, the feed
+webui/              the researcher's browser view
+docs/               specs and setup
+tests/              pure-logic tests, no hardware needed
 ```
 
-Useful flags: `--detector yolo|yoloworld|gdino` (default `yolo`, closed COCO), `--confirm`
-(VLM re-checks each fire), `--no-sound`, `--cooldown <s>` (habituation), `--no-save` (test, no
-disk). Hardware smoke tests: `python cam_test.py --camera http://<ip>/` and
-`python rig_moves.py --port /dev/cu.usbmodem101`.
+Every package's `__init__.py` says in a few lines what that package owns and what
+each file in it does. Start there, then `docs/ARCHITECTURE.md` for how the layers
+hand off.
 
+---
+
+## Working on this together
+
+The split is meant to let two people work at once without meeting in the same
+file:
+
+| If you are changing… | you live in | you should not need to touch |
+|---|---|---|
+| how the robot moves | `motion/`, `robot/` | perception, planning |
+| what counts as a relation | `perception/` | motion, the web UI |
+| what the VLM is asked, and how its answer is compiled | `planning/` | motion, firmware |
+| the interaction — screens, timing, sound | `session/`, `robot/firmware/` | perception |
+| what the researcher sees | `webui/` | everything else |
+
+Three conventions that are not negotiable, because breaking each one has already
+cost us a day:
+
+1. **The CSVs in `motion/clips/` are build artefacts. Never hand-edit one.**
+   To change a movement, edit the `.blend` in `motion/src/` (or the generator in
+   `motion/blender/`) and re-export. A hand-edited CSV looks fine, then disagrees
+   with the file it came from, and nobody can tell afterwards which one is real.
+
+2. **`robot/calibration.py` describes THIS physical build.** Those numbers were
+   *measured*, with `robot/tools/jog.py` — not chosen. If you rebuild the neck,
+   re-measure. Do not nudge values until it looks right.
+
+3. **One owner per channel.** The screen belongs to the state machine, the
+   antenna's colour to the state table, its brightness to the playing clip. When
+   two code paths wrote the same channel we spent a day chasing a red LED that
+   turned blue by itself.
+
+---
+
+## Specs
+
+- `docs/GETTING_STARTED.md` — **start here on a new machine**
+- `docs/ARCHITECTURE.md` — the four layers and what crosses between them
+- `docs/INTERACTION_SPEC.md` — every trigger, screen and timeout, and why
+- `docs/HARDWARE_SETUP.md` — wiring, servo IDs, calibration, flashing
+- `docs/MOTION_AUTHORING.md` — the Blender workflow
+- `docs/relation_table.md` — the eleven-row relation vocabulary, with citations
+- `docs/TEST_PLAN.md` — staged bring-up, each stage with numeric pass criteria

@@ -170,7 +170,7 @@ the executor gains sequence support.
 | New component | Source |
 |---|---|
 | T/F evaluators (rows 1–4) | gaze.py as-is; rows 5–10 each ~20–40 lines of new geometry |
-| watch-spec executor | attention_demo's RelationGate + extract_relations, re-keyed to conjunctions |
+| watch-spec executor | perception/watch_exec.py -- WatchExecutor, keyed to conjunctions |
 | VLM planner (new) | judge.py-style anthropic call, new prompt + schema; offline mode as usual |
 | recording / feed / web UI | publish / serve_ui / render reused unchanged |
 | optional confirm step | judge's `confirm` kept: when a conjunction fires, the VLM may double-check the image (precision) |
