@@ -1,7 +1,7 @@
-# NoticeBot
+# NoticeBot-Potato2.0
 
-A desk robot that watches for one thing you asked it to watch for, and tells you
-when it happens.
+A placed sidekick that watches for one thing you asked it to watch for, and tells you
+when it happens in real-time.
 
 You say *"the roundtable area at my lab — people usually have meetings here."*
 The robot turns its head across the room, photographs each angle, and sends all
@@ -12,34 +12,31 @@ attention, pointing, F-formation, turn-taking …). CV then evaluates that spec
 frame by frame, at the angle that looked richest. When the spec is satisfied the
 robot collects a short photo story of the moment and looks up at you.
 
-The contribution is not the detection. It is that **you can read and argue with
-what it decided to watch for** — the compiled spec is on screen, each row lit as
-it becomes true.
+   what is interesting is: 
+      1.you can read and argue with what it decided to watch for
+      2.the whole human-robot-collaboration loop of notice delegation
+
 
 ---
 
-## The hardware this repo is for
+## The hardware list
 
-This is v2, the 3-DOF lamp form. Nothing here supports the earlier Arduino R4
-pan-tilt rig or the UnitCam S3 head; that code has been removed.
+This is v2, the 3-DOF lamp form.
 
 | | |
 |---|---|
-| Neck | 3 × Feetech **SCS0009** serial-bus servos — pan / tilt / nod |
+| Motions | 3 × Feetech **SCS0009** serial-bus servos — pan(id:1) / tilt(id:2) / nod(id:3) |
 | Bus | **FE-URT2-C001** USB↔TTL adapter, 1 Mbaud, external 5–6 V on the servo rail |
 | Head camera | **InnoMaker OV4688** UVC module, 4 MP, H-FOV 58° |
-| Face | **M5Stack CoreS3** — screen, speaker, TTP223 body-tap sensor |
-| Antenna | Grove Chainable RGB LED (P9813) on CoreS3 Port B |
-| Body | printed lamp form — `robot/cad/stl/` |
-| Brain | your laptop. Everything runs here; the boards are I/O. |
+| Microcontroller | **M5Stack CoreS3** — screen, speaker, TTP223 body-tap sensor, Grove Chainable RGB LED (P9813) |
+| Body | simply designed 3-DOF lamp form (built in rhino)|
+| Reasoning Brain | laptop. Everything runs here; the boards are I/O. |
 
 ---
 
 ## Running it
 
-**On a new machine, start at `docs/GETTING_STARTED.md`.** It walks the three
-tiers below in order, and it is written so you can stop at whichever one your
-question lives in.
+**On a new machine, start at `docs/GETTING_STARTED.md`.
 
 ```bash
 pip install -r requirements.txt
@@ -48,28 +45,24 @@ pip install -r requirements.txt
 python3 tests/test_session_flow.py
 
 # tier 1 — MOTION ONLY. Servos and nothing else: no camera, no VLM, no API key.
-export NOTICEBOT_PORT=/dev/cu.usbmodemXXXXX     # robot/tools/check_bus.py finds it
+export NOTICEBOT_PORT=/dev/cu.usbmodemXXXXX     
 python3 robot/clip_player.py S7a                # one state
-python3 robot/clip_player.py                    # the whole designed cycle
+python3 robot/clip_player.py                    # every state
 python3 robot/clip_player.py --all --cores3     # every state, with LED and sound
 
 # tier 2 — the full loop
-export ANTHROPIC_API_KEY=sk-...
-python3 noticebot_loop.py --cam 0 --cores3 --serve      # then localhost:8000
+export ANTHROPIC_API_KEY=sk-...                         # VLM API
+python3 noticebot_loop.py --cam 0 --cores3 --serve      # run WEBUI on localhost:8000 
 ```
 
-Tier 1 is the one to use when the question is about the movement. Do not debug a
-motion problem from tier 2, where it looks like a perception problem.
-
-Before trusting a session: `python3 robot/tools/preflight.py` — a GO / NO-GO
-check with numeric criteria.
+Before trusting a session: `python3 robot/tools/preflight.py` — a check for connection. will print a GO if everything's ok.
 
 ---
 
 ## What is where
 
 ```
-noticebot_loop.py   the conductor — the only long-running process
+noticebot_loop.py   MAIN — the only process
 robot/              servos: bus, calibration, clip playback, firmware, CAD
 motion/             the movement design: Blender sources, generators, clips
 perception/         CV: detectors, pose, the 11-row relation engine
@@ -86,11 +79,8 @@ hand off.
 
 ---
 
-## Working on this together
-
-The split is meant to let two people work at once without meeting in the same
-file:
-
+## How to work on this
+(manage the folders properly!!!)
 | If you are changing… | you live in | you should not need to touch |
 |---|---|---|
 | how the robot moves | `motion/`, `robot/` | perception, planning |
@@ -99,8 +89,7 @@ file:
 | the interaction — screens, timing, sound | `session/`, `robot/firmware/` | perception |
 | what the researcher sees | `webui/` | everything else |
 
-Three conventions that are not negotiable, because breaking each one has already
-cost us a day:
+!!!!!!!!!!!!Three important conventions: breaking each one has already cost us a day!!!!!!!!!!!!
 
 1. **The CSVs in `motion/clips/` are build artefacts. Never hand-edit one.**
    To change a movement, edit the `.blend` in `motion/src/` (or the generator in
@@ -112,9 +101,7 @@ cost us a day:
    re-measure. Do not nudge values until it looks right.
 
 3. **One owner per channel.** The screen belongs to the state machine, the
-   antenna's colour to the state table, its brightness to the playing clip. When
-   two code paths wrote the same channel we spent a day chasing a red LED that
-   turned blue by itself.
+   antenna's colour to the state table, its brightness to the playing clip.
 
 ---
 
@@ -126,4 +113,4 @@ cost us a day:
 - `docs/HARDWARE_SETUP.md` — wiring, servo IDs, calibration, flashing
 - `docs/MOTION_AUTHORING.md` — the Blender workflow
 - `docs/relation_table.md` — the eleven-row relation vocabulary, with citations
-- `docs/TEST_PLAN.md` — staged bring-up, each stage with numeric pass criteria
+- `docs/TEST_PLAN.md` — pre-test finished, replace with user study design?

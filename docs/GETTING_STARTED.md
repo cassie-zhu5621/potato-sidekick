@@ -9,10 +9,6 @@ when something breaks you already know which layer it is in.
 | **1 — motion only** | servos + FE-URT2 (+ CoreS3) | play any state, or walk the whole cycle. **This is the tier for studying the movement.** No camera, no VLM, no API key. |
 | **2 — full loop** | + head camera + API key | a real session: speak, plan, watch, notice |
 
-Do not skip to tier 2 on a new machine. Almost every problem we have had was in
-tier 1 and was invisible from tier 2, where a motion fault looks like a
-perception fault.
-
 ---
 
 ## 0. Logic only (5 minutes, no hardware)
@@ -53,8 +49,7 @@ Full detail in `HARDWARE_SETUP.md`. The three things that most often go wrong:
 
 1. **The servo bus needs its own 5–6 V supply** on the FE-URT2's blue screw
    terminal. The board back-feeds USB 5 V through a diode, so a servo will answer
-   at **4.3 V with no external supply at all** — enough to read registers and
-   nothing more. **If the bus reads 4.3 V, your external power is not arriving.**
+   at **4.3 V with no external supply at all**  enough to read registers. **If the bus reads 4.3 V, your external power is not arriving (Now a battery box with 4 batteries is used for current version).**
 2. **The signal-level slider goes to 5 V**, not 3.3 V.
 3. **Servo IDs must be 1 = pan, 2 = tilt, 3 = nod.** New servos all ship as ID 1,
    and three servos answering as ID 1 gives you total silence on the bus — which
@@ -73,7 +68,7 @@ guessing, so re-run it rather than trusting an old value.
 
 Expect three lines with **~6 V**, not 4.3 V.
 
-### Calibration — read before you play anything
+### (NOT NECESSARY with the SAME hardware) Calibration — read before you play anything 
 
 `robot/calibration.py` holds numbers that describe **the physical build they were
 measured on**. If you are running someone else's servos, or the neck has been
@@ -83,7 +78,7 @@ rebuilt, they are wrong for you and the robot will drive into its end stops.
 python3 robot/tools/jog.py            # drive one joint by hand; c = centre, [ ] = limits
 ```
 
-It writes `calibration.py` for you. This is measurement, not tuning — do not
+It writes `calibration.py` for you. This is measurement, do not
 nudge the values until it looks right.
 
 ### Play the motion
@@ -122,8 +117,7 @@ python3 robot/clip_player.py --cores3 --led-test    # LED only: is the firmware 
 
 Arduino IDE → open `robot/firmware/cores3_sidekick/cores3_sidekick.ino` →
 board **M5Core S3** → upload. On boot it prints `IN HELLO cores3_sidekick v2`
-and draws the idle screen with a big green PTT and a red STOP. If you see
-anything else on the screen, you are running the old firmware.
+and draws the idle screen with a big green PTT and a red STOP. 
 
 ---
 
@@ -200,7 +194,7 @@ Walk one round to confirm the whole chain:
 
 ### Where a session ends up
 
-`session_feed/` (gitignored — it is data, not source):
+`session_feed/` (gitignored — it is data saved on local machine):
 
 ```
 frame_<id>.jpg               the comic strip of one noticed moment
@@ -218,7 +212,7 @@ something it never actually saw.
 
 ---
 
-## When it does not work
+## Debug
 
 | symptom | look here |
 |---|---|

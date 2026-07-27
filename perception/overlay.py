@@ -1,8 +1,7 @@
 """
 overlay.py — everything drawn on a frame, in one place.
 
-Lifted out of the old attention_system.py runner so that the drawing code has no
-dependency on any particular main loop. Colours are shared with the web UI's
+Colours are shared with the web UI's
 vocabulary chips on purpose: a relation that is yellow-green in the video must be
 yellow-green in the panel, or the two views cannot be read together.
 """
