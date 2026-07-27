@@ -12,6 +12,7 @@ the ones a participant will find in the first five minutes.
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from session.session_flow import SessionFlow, transcript_usable
+from robot import states as ST
 
 CLOCK = [0.0]
 fails = []
@@ -72,15 +73,28 @@ f = flow()
 run(f, ["ptt_down", "ptt_up", "transcript:find the blue mug"], "")
 expect(f.state == "S3_ACK", "the corrected text goes straight through")
 
-print("\n--- STT timeout ---")
+print("\n--- STT timeout: 15s of nothing -> S8 ---")
 f = flow()
 run(f, ["ptt_down", "ptt_up"], "")
-CLOCK[0] = 4.0
+CLOCK[0] = 10.0
 f.feed("tick")
-expect(f.state == "S2_LISTEN", "still waiting at 4s")
-CLOCK[0] = 9.0
+expect(f.state == "S2_LISTEN", "still waiting at 10s")
+CLOCK[0] = 16.0
 f.feed("tick")
-expect(f.state == "S8_ERROR", "past 8s -> S8_ERROR")
+expect(f.state == "S8_ERROR", f"past {ST.STT_TIMEOUT_S:.0f}s -> S8_ERROR")
+
+# busy may postpone the deadline; it may not postpone it forever.
+f = flow()
+run(f, ["ptt_down", "ptt_up"], "")
+f.stt_busy = True
+CLOCK[0] = 25.0
+f.feed("tick")
+expect(f.state == "S2_LISTEN", "a RUNNING transcription is not a timeout")
+CLOCK[0] = 31.0
+f.feed("tick")
+expect(f.state == "S8_ERROR",
+       f"but past the {ST.STT_HARD_TIMEOUT_S:.0f}s ceiling it errors anyway -- "
+       f"a wedged worker must not strand a participant")
 
 print("\n--- S7 ignored for 30s ---")
 f = flow()
@@ -172,14 +186,39 @@ run(f, ["ptt_down", "ptt_up"], "")
 f.feed("typed:watch the door")
 expect(f.state == "S3_ACK", "typed during S2 corrects a misread, as before")
 
-f = flow()
-f.feed("typed:zz")
-expect(f.state == "S1_IDLE",
-       "a RESEARCHER's typo is refused in place, not performed as S8")
-f = flow()
-run(f, ["ptt_down", "ptt_up", "transcript:zz"], "")
-expect(f.state == "S8_ERROR",
-       "the PARTICIPANT's nonsense still visibly errors -- the difference is who")
+# Nonsense errors whatever it arrived on. What a participant can see is the
+# robot, not the keyboard, so "it did not understand" has to look the same way
+# every time.
+for ev, who in [("typed", "researcher"), ("transcript", "participant")]:
+    f = flow()
+    if ev == "transcript":
+        run(f, ["ptt_down", "ptt_up"], "")
+    f.feed(f"{ev}:zz")
+    expect(f.state == "S8_ERROR", f"nonsense from the {who} -> S8_ERROR")
+
+print("\n--- noises are not requests ---")
+# These pass the length and word-count tests and are plainly not requests. A
+# participant who beeps at the robot must see it fail to understand, not watch
+# it plan confidently against a noise.
+for junk, why in [("beep beep beep", "an onomatopoeia, repeated"),
+                  ("la la la", "singing"),
+                  ("agaeirughsrihrsi", "keyboard mash, one word"),
+                  ("asdfghjkl qwertyuiop", "keyboard mash, two words"),
+                  ("ggggg hhhhh", "no vowels at all"),
+                  ("test test", "the same word twice")]:
+    ok, reason = transcript_usable(junk)
+    expect(not ok, f"{junk!r:24} rejected -- {why} ({reason})")
+    f = flow()
+    f.feed(f"typed:{junk}")
+    expect(f.state == "S8_ERROR", f"{junk!r:24} typed from idle -> S8_ERROR")
+
+# ...and the rejection must not be so eager that it eats real requests.
+for good in ["watch the roundtable area at my lab",
+             "tell me when someone points at the whiteboard",
+             "keep an eye on the door", "find the blue mug",
+             "the strengths of the team", "look left"]:
+    ok, reason = transcript_usable(good)
+    expect(ok, f"{good[:44]!r:46} still accepted ({reason})")
 
 # Typed text re-plans from EVERY state, including mid-watch. This is the wizard
 # channel and it has to feel immediate; gating it on state made it read as broken.
@@ -207,6 +246,9 @@ out = run(f, ["ptt_up"], "")
 expect(("rec", "stop") in out, "release stops the recorder")
 CLOCK[0] = 69.0
 f.feed("tick")
+expect(f.state == "S2_LISTEN", "9s after release is still inside the 15s deadline")
+CLOCK[0] = 76.0
+f.feed("tick")
 expect(f.state == "S8_ERROR", "and only then does the STT deadline run")
 
 print("\n--- a cold recogniser is not a dead one ---")
@@ -216,7 +258,7 @@ print("\n--- a cold recogniser is not a dead one ---")
 f = flow()
 run(f, ["ptt_down", "ptt_up"], "")
 f.stt_busy = True
-CLOCK[0] = 45.0
+CLOCK[0] = 20.0
 f.feed("tick")
 expect(f.state == "S2_LISTEN", "no timeout while a transcription is RUNNING")
 f.stt_busy = False
@@ -224,7 +266,7 @@ f.feed("transcript:watch the roundtable")
 expect(f.state == "S3_ACK", "the late transcript is still accepted")
 f = flow()
 run(f, ["ptt_down", "ptt_up"], "")
-CLOCK[0] = 45.0
+CLOCK[0] = 20.0
 f.feed("tick")
 expect(f.state == "S8_ERROR", "but a recogniser that never answers still errors")
 

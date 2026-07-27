@@ -155,7 +155,13 @@ S7_IGNORED_TIMEOUT_S = 30.0
 # How long the loop waits for Whisper before giving up and showing S8. Generous:
 # a wrong transcript is recoverable (S6 exists), a hang in S3 is not -- the screen
 # is already promising the participant that it heard them.
-STT_TIMEOUT_S = 8.0
+STT_TIMEOUT_S = 15.0
+# The ceiling a RUNNING transcription cannot push past. `stt_busy` pauses the
+# deadline above, so that a recogniser which is slow but working does not lose
+# the request it is in the middle of getting right -- but "busy" must not mean
+# "wait forever", or a wedged worker leaves a participant staring at a robot that
+# will never answer. Past this, S8 regardless.
+STT_HARD_TIMEOUT_S = 30.0
 
 # How long S6 waits for a direction before giving up and watching again. It has to
 # give up: "not that!?" is a question, and a robot still asking it a minute later

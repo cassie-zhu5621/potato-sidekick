@@ -44,6 +44,39 @@ def transcript_usable(text, no_speech_prob=0.0, avg_logprob=0.0):
         return False, f"no_speech_prob {no_speech_prob:.2f}"
     if avg_logprob < r["min_avg_logprob"]:
         return False, f"avg_logprob {avg_logprob:.2f} -- likely hallucinated"
+
+    # DOES THIS LOOK LIKE LANGUAGE AT ALL. The length and word-count tests above
+    # pass things that are plainly not requests -- "beep beep beep" is fourteen
+    # characters and three words -- and a participant who makes a noise at the
+    # robot should see it fail to understand, not watch it plan confidently
+    # against a noise. Three cheap tests, no model:
+    words = [w.strip(".,!?;:'\"").lower() for w in t.split()]
+    words = [w for w in words if w]
+
+    #   1. one word repeated. "beep beep beep", "la la la", "test test".
+    if len(words) >= 2 and len(set(words)) == 1:
+        return False, f"the same word {len(words)} times -- not a request"
+
+    #   2. a consonant run no English word has. Threshold 6 because real words
+    #      reach 5 ("strengths" -> ngths); keyboard mash reaches far more.
+    vowels = set("aeiouy")
+    for w in words:
+        run = best = 0
+        for ch in w:
+            if ch.isalpha() and ch not in vowels:
+                run += 1
+                best = max(best, run)
+            else:
+                run = 0
+        if best >= 6:
+            return False, f"{w!r} has {best} consonants in a row -- keyboard mash"
+
+    #   3. almost no vowels across the whole thing.
+    letters = [c for c in t.lower() if c.isalpha()]
+    if len(letters) >= 8:
+        ratio = sum(1 for c in letters if c in vowels) / len(letters)
+        if ratio < 0.15:
+            return False, f"vowel ratio {ratio:.2f} -- not words"
     return True, "ok"
 
 
@@ -54,7 +87,8 @@ class SessionFlow:
         self.screen = "idle"
         self.noticed = 0
         self.transcript = None
-        self._ptt_up_at = None       # waiting for a transcript since
+        self._ptt_up_at = None       # waiting for a transcript since (busy resets it)
+        self._ptt_up_first_at = None # ...and when the wait FIRST began (busy cannot)
         self._s7_at = None           # in S7b since
         self._reaim_at = None        # in S6 awaiting a direction since
         self.stt_busy = False        # set by the loop while Whisper is running
@@ -89,7 +123,7 @@ class SessionFlow:
         # participant must be able to trust unconditionally.
         if ev == "stop":
             self.transcript = None       # STOP discards the task (STOP_DISCARDS_TASK)
-            self._ptt_up_at = None
+            self._ptt_up_at = self._ptt_up_first_at = None
             self.plan_pending = False
             self._go("S1_IDLE", "STOP -- task discarded, waiting for a new request")
             # Discarding the task has to reach PERCEPTION as well, not just the
@@ -111,22 +145,21 @@ class SessionFlow:
         if ev == "ptt_up":
             if self.state == "S2_LISTEN":
                 self._emit("rec", "stop")
-                self._ptt_up_at = self.now()
+                self._ptt_up_at = self._ptt_up_first_at = self.now()
                 # The robot holds, facing the person. It does NOT nod yet: the nod
                 # and "I heard you." are one act, and nodding before the words
                 # exist would claim understanding of something not yet read.
                 self._ui("waiting")
             return self.out
 
-        # A request arriving as text. Two sources, ONE acceptance rule:
+        # A request arriving as text. Two sources, ONE acceptance rule and ONE
+        # outcome:
         #   transcript: -- from Whisper, i.e. from the participant's own turn
         #   typed:      -- from the researcher's web UI box
-        # They differ only in WHERE they may arrive from, and in what an unusable
-        # one means. Whisper only speaks during S2, and nonsense there is the
-        # participant's turn failing, which the robot must show (-> S8). The
-        # researcher types precisely when the turn has ALREADY failed -- from idle,
-        # or out of the error state -- and a typo of theirs is not something the
-        # robot should perform, so it is refused in place instead.
+        # They now differ only in WHERE they may arrive from. Whisper speaks only
+        # during S2; typed text is accepted from every state, including S1_IDLE,
+        # and always re-plans. Nonsense from either one goes to S8, because what
+        # a participant can see is the robot, not the keyboard.
         if ev in ("transcript", "typed"):
             manual = (ev == "typed")
             # Whisper only speaks during the participant's turn. TYPED text is
@@ -139,18 +172,23 @@ class SessionFlow:
                 self._emit("log", f"transcript arrived in {self.state}, ignored")
                 return self.out
             ok, why = transcript_usable(arg)
-            self._ptt_up_at = None
+            self._ptt_up_at = self._ptt_up_first_at = None
             if ok:
                 self.transcript = arg.strip()
                 self.plan_pending = True
                 self._emit("plan", self.transcript)
                 self._go("S3_ACK", f"{'typed' if manual else 'heard'} "
                                    f"{self.transcript!r}")
-            elif manual:
-                self._emit("log", f"typed text unusable ({why}) -- not run; "
-                                  f"retype it")
             else:
-                self._go("S8_ERROR", f"unusable request: {why}")
+                # BOTH sources error, whatever the text came in on. An earlier
+                # version refused typed nonsense quietly, on the reasoning that a
+                # researcher's typo should not make the robot perform a failure.
+                # That was the wrong call for a study: the participant is looking
+                # at the robot, not at the keyboard, and "it did not understand"
+                # has to be legible from where they are sitting. If the words are
+                # not a request, the robot says so -- the same way, every time.
+                src = "typed" if manual else "heard"
+                self._go("S8_ERROR", f"unusable request ({src}): {why}")
             return self.out
 
         if ev == "tap":
@@ -227,14 +265,18 @@ class SessionFlow:
             # truthy version silently disabled both timeouts whenever the first
             # action happened at the clock's origin. It only shows up in a test
             # with a fake clock -- on real hardware monotonic() is never 0.
-            if self.stt_busy:
+            hard = (self._ptt_up_first_at is not None
+                    and t - self._ptt_up_first_at > ST.STT_HARD_TIMEOUT_S)
+            if self.stt_busy and not hard:
                 # A transcription that is actually running is not a timeout. The
                 # deadline exists to catch a recogniser that never answers, not a
                 # slow one; without this a cold model loses the request it is in
-                # the middle of successfully transcribing.
+                # the middle of successfully transcribing. `hard` is the ceiling:
+                # busy may postpone, it may not postpone indefinitely.
                 self._ptt_up_at = t
-            if self._ptt_up_at is not None and t - self._ptt_up_at > ST.STT_TIMEOUT_S:
-                self._ptt_up_at = None
+            if self._ptt_up_at is not None and (
+                    hard or t - self._ptt_up_at > ST.STT_TIMEOUT_S):
+                self._ptt_up_at = self._ptt_up_first_at = None
                 self._go("S8_ERROR", "no transcript within "
                                      f"{ST.STT_TIMEOUT_S:.0f}s")
             elif (self._reaim_at is not None and self.state == "S6_FINETUNE"
