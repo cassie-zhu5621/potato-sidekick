@@ -506,9 +506,14 @@ def _main():
             p.request(s)
             spec = ST.STATES[s]
             if link:
-                link.hue(spec["hue"])       # colour = state, level = clip
-                link.step({"S1_IDLE": "REST", "S8_ERROR": "CONFUSED"}
-                          .get(s, "WATCH"))
+                # Colour comes from the state table, brightness from the clip,
+                # screen from the state -- one owner each. `link.step()` used to
+                # be called here too; it was a v1 command that set the colour as
+                # a SIDE EFFECT, and it is gone from both the firmware and
+                # cores3_link, so this line raised AttributeError on the first
+                # state of every --cores3 run.
+                link.hue(spec["hue"])
+                link.ui(spec["screen"])
             # Wait for it to actually BE the state, then for the exit condition:
             # a loop state has no natural end, so give it two full passes; a
             # one-shot is done when the player has moved on or is holding.

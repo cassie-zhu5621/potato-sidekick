@@ -48,11 +48,11 @@ python3 tests/test_session_flow.py
 export NOTICEBOT_PORT=/dev/cu.usbmodemXXXXX     
 python3 robot/clip_player.py S7a                # one state
 python3 robot/clip_player.py                    # every state
-python3 robot/clip_player.py --all --cores3     # every state, with LED and sound
+python3 robot/clip_player.py --all --cores3 /dev/cu.usbmodemXXXX     # every state, with LED and sound
 
 # tier 2 — the full loop
 export ANTHROPIC_API_KEY=sk-...                         # VLM API
-python3 noticebot_loop.py --cam 0 --cores3 --serve      # run WEBUI on localhost:8000 
+python3 noticebot_loop.py --cam 0 --cores3 /dev/cu.usbmodemXXXX --serve      # run WEBUI on localhost:8000 
 ```
 
 Before trusting a session: `python3 robot/tools/preflight.py` — a check for connection. will print a GO if everything's ok.

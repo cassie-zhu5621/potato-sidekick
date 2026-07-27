@@ -25,6 +25,20 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
 try:
     from robot.scs import Bus, SUPPORTED_BAUDS
 except ImportError as e:
+    # Two very different faults used to print the same message, which sent people
+    # looking at paths when the real problem was an environment. Say which it is.
+    missing = getattr(e, "name", "") or str(e)
+    if "scservo" in missing:
+        sys.exit("the Feetech SDK is not installed in THIS python environment.\n"
+                 f"  python:  {sys.executable}\n"
+                 "  fix:     pip install feetech-servo-sdk\n"
+                 "  note:    the pip name is feetech-servo-sdk, the import name\n"
+                 "           is scservo_sdk, and `scservo-sdk` does not exist on\n"
+                 "           PyPI. If you have a conda env for this project, you\n"
+                 "           are probably in the wrong one -- activate it first.")
+    if "serial" in missing:
+        sys.exit(f"pyserial is not installed in {sys.executable}\n"
+                 "  fix: pip install pyserial")
     sys.exit(f"cannot import robot.scs -- run this from the repo root: {e}")
 
 # most likely first; FE-URT2 + SCS0009 ship at 1 Mbps

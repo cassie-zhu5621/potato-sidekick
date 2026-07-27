@@ -32,7 +32,11 @@ def check(label, status, detail=""):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--cam", type=int, default=None)
-    ap.add_argument("--clips", default=os.path.join(HERE, "..", "model", "v2.0", "export"))
+    # The clips live in motion/, two levels up from robot/tools/ -- they are the
+    # movement DESIGN, not a hardware asset, which is why they are not under
+    # robot/. Kept as one expression so there is a single place to change it.
+    ap.add_argument("--clips", default=os.path.join(HERE, "..", "..",
+                                                    "motion", "clips"))
     a = ap.parse_args()
 
     print("\n--- calibration ---")
