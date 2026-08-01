@@ -35,8 +35,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))))
 from robot.scs import Bus, open_bus
 
-IDS = {"pan": 1, "tilt": 2, "nod": 3}
-ORDER = ["pan", "tilt", "nod"]
+from robot import IDS, ORDER  # single source of truth: robot/__init__.py
 UNITS_PER_DEG = 1023 / 300.0
 STEP_TIME_MS = 220          # every jog is a timed move -- never full speed
 END_MARGIN = 60             # treat this close to 0 or 1023 as "against the stop"
@@ -58,11 +57,22 @@ class Jog:
         # session so that saving after calibrating one joint cannot wipe the
         # other two.
         self.prev_centre, self.prev_limits = {}, {}
+        self.prev_invert = {}
         self.prev_uncal = set()
         try:
             from robot import calibration as _c
             self.prev_centre = dict(getattr(_c, "CENTRE", {}))
             self.prev_limits = {k: tuple(v) for k, v in getattr(_c, "LIMITS", {}).items()}
+            # INVERT is NOT measurable here. Which way a jog key moves a joint says
+            # nothing about whether a clip plays mirrored -- only comparing against
+            # the render does. Earlier versions of save() rewrote all three to False,
+            # silently discarding findings that cost a hardware session to establish.
+            self.prev_invert = dict(getattr(_c, "INVERT", {}))
+            if any(self.prev_invert.values()):
+                flipped = ", ".join(sorted(k for k, v in self.prev_invert.items() if v))
+                print(f"carrying over INVERT=True for: {flipped}")
+                print("  -> if a horn was re-mounted, these are STALE. Re-confirm by")
+                print("     playing a clip against the render before trusting it.")
             # Carried over, not recomputed: a joint listed here has placeholder
             # numbers in the file. Without this the placeholders look exactly
             # like real measurements on the next save, and the guard silently
@@ -81,8 +91,23 @@ class Jog:
             self.seen[n] = [p, p]
 
     def move(self, delta):
+        """Jog, but never into the servo's electrical end.
+
+        The end stop is not a soft limit: on a fresh build, before the horn or
+        the loom restricts anything, the servo will happily drive into its own
+        potentiometer stop and grind. END_MARGIN keeps ~17 deg of air at each
+        end, which is far more than any joint on this robot needs. If a real
+        mechanical limit sits beyond the rail, find it with torque OFF and the
+        joint moved by hand, not by driving into it.
+        """
         n = self.sel
-        u = max(0, min(1023, self.target[n] + delta))
+        want = self.target[n] + delta
+        u = max(END_MARGIN, min(1023 - END_MARGIN, want))
+        if u != want:
+            print(f"\n  !! {n}: refusing to jog to {want} -- within {END_MARGIN} units"
+                  f" of the electrical end. Held at {u}."
+                  f"\n     If neutral is this close to an end, the horn is mis-mounted:"
+                  f"\n     re-seat it with the servo commanded to 512.")
         self.target[n] = u
         self.bus.write_pos(IDS[n], u, time_ms=STEP_TIME_MS, speed=0)
         self.seen[n][0] = min(self.seen[n][0], u)
@@ -122,6 +147,23 @@ class Jog:
         after = self.bus.read_pos(sid)
         return p, after
 
+    def _lim(self, n):
+        """This session's limits for n, or None if they are not usable yet.
+
+        A half-pressed pair is NOT a limit. The old code stored `[` as
+        (target, target), so one keypress produced a range of zero width; clamp()
+        then froze the joint on that single unit for every frame of every clip,
+        without erroring. That is how tilt ended up pinned at 513 and nod at 534.
+        Both ends have to be recorded, and they have to differ.
+        """
+        pair = self.limits.get(n)
+        if not pair:
+            return None
+        lo, hi = pair
+        if lo is None or hi is None or lo == hi:
+            return None
+        return tuple(sorted((lo, hi)))
+
     def status(self):
         self.bus.flush_input()
         bits = []
@@ -131,12 +173,12 @@ class Jog:
             # load is sign+magnitude: bit 10 = direction, low 10 bits = effort
             ld = None if ld is None else (ld & 0x3FF)
             mark = ">" if n == self.sel else " "
-            lo, hi = self.limits.get(n, (None, None))
-            if lo is not None and hi is not None:
-                lo, hi = sorted((lo, hi))
-                lim = f"[{lo},{hi}]"
+            got = self._lim(n)
+            if got:
+                lim = f"[{got[0]},{got[1]}]"
             else:
-                lim = "[--,--]"
+                lo, hi = self.limits.get(n, (None, None))
+                lim = f"[{lo if lo is not None else '--'},{hi if hi is not None else '--'}]"
             ctr = self.centre.get(n)
             warn = ""
             if p is not None and (p < END_MARGIN or p > 1023 - END_MARGIN):
@@ -146,10 +188,17 @@ class Jog:
         return "  ".join(bits)
 
     def save(self, path=None):
-        """Write calibration.py next to the scripts. play_on_hardware.py imports
-        it automatically, so nothing has to be copied by hand."""
-        path = path or os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                    "calibration.py")
+        """Write robot/calibration.py -- the file everything else imports.
+
+        NOT next to this script. jog.py lives in robot/tools/, but every consumer
+        does `from robot import calibration`, i.e. robot/calibration.py one level
+        up. Writing beside the script created robot/tools/calibration.py, which
+        nothing reads: the session appeared to succeed, the real file stayed
+        stale, and the next clip played on the old numbers.
+        """
+        path = path or os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "calibration.py")
         lines = ['"""Written by jog.py. Safe to hand-edit -- this is config, not a',
                  'build artifact (unlike the clip CSVs, which get overwritten by the',
                  'next Blender export).',
@@ -160,11 +209,18 @@ class Jog:
                  '"""']
         # measured this session wins; otherwise keep whatever was already on disk
         centre = {n: self.centre.get(n, self.prev_centre.get(n)) for n in ORDER}
-        limits = {n: self.limits.get(n, self.prev_limits.get(n)) for n in ORDER}
-        measured = set(self.centre) | set(self.limits)      # touched this session
+        limits = {n: self._lim(n) or self.prev_limits.get(n) for n in ORDER}
+        # Only a COMPLETE pair counts as measured. A half-pressed [ or ] must not
+        # clear the UNCALIBRATED flag, or play_on_hardware's guard unlocks on a
+        # limit that is one unit wide.
+        measured = set(self.centre) | {n for n in ORDER if self._lim(n)}
         unknown = sorted(n for n in ORDER
                          if centre[n] is None or limits[n] is None
                          or (n in self.prev_uncal and n not in measured))
+        half = [n for n in ORDER if self.limits.get(n) and not self._lim(n)]
+        if half:
+            print(f"  !! {', '.join(half)}: only one end recorded -- limits NOT saved"
+                  f" for these. Press BOTH [ and ], at different positions.")
 
         lines.append("UNCALIBRATED = " + (repr(set(unknown)) if unknown else "set()"))
         lines.append("")
@@ -183,28 +239,52 @@ class Jog:
         for n in ORDER:
             lines.append(f'    "{n}": {(centre[n] if centre[n] is not None else 512) - 512},')
         lines.append("}")
+        lines.append("# INVERT is carried over, never measured here: which way a jog")
+        lines.append("# key moves a joint does NOT tell you whether a clip plays")
+        lines.append("# mirrored. Only playing one and comparing with the render does.")
+        lines.append("# After re-mounting a horn, treat every entry below as stale.")
         lines.append("INVERT = {")
         for n in ORDER:
-            lines.append(f'    "{n}": False,   # flip after comparing with the render')
+            v = bool(self.prev_invert.get(n, False))
+            note = "" if n in self.prev_invert else "   # never confirmed against a render"
+            lines.append(f'    "{n}": {v},{note}')
         lines.append("}")
         with open(path, "w") as f:
             f.write("\n".join(lines) + "\n")
         return path
 
     def block(self):
-        out = ["", "# also written to calibration.py", "LIMITS = {"]
+        # Must resolve exactly as save() does. An earlier version fell back to
+        # self.seen -- the range the joint happened to be jogged through -- so a
+        # session where nothing was recorded still printed plausible-looking
+        # limits, while the file kept the old ones. Two different answers in the
+        # same breath, and the printed one was the lie.
+        out = ["", "# what save() will write to robot/calibration.py", "LIMITS = {"]
         for n in ORDER:
             # Sorted, not as-pressed: which key walks a joint "up" depends on how
             # the horn was mounted, so [ and ] can land either way round. An
             # unsorted (lo, hi) makes clamp() collapse to a constant and the joint
             # silently freezes at one position.
-            lo, hi = sorted(self.limits.get(n, self.seen[n]))
-            out.append(f'    "{n}": ({lo}, {hi}),')
+            mine = self._lim(n)
+            src = mine or self.prev_limits.get(n)
+            tag = ("" if mine else
+                   "   # HALF-PRESSED, IGNORED -- kept from disk"
+                   if self.limits.get(n) and src else
+                   "   # NOT SET THIS SESSION -- kept from disk" if src else
+                   "   # NEVER MEASURED")
+            lo, hi = sorted(src) if src else (462, 562)
+            out.append(f'    "{n}": ({lo}, {hi}),{tag}')
         out.append("}")
         out.append("OFFSET = {")
         for n in ORDER:
-            out.append(f'    "{n}": {self.centre.get(n, 512) - 512},')
+            c = self.centre.get(n, self.prev_centre.get(n, 512))
+            tag = "" if n in self.centre else "   # NOT SET THIS SESSION"
+            out.append(f'    "{n}": {c - 512},{tag}')
         out.append("}")
+        pending = [n for n in ORDER if n not in self.limits or n not in self.centre]
+        if pending:
+            out.append(f"# still to record: {', '.join(pending)}"
+                       f"  (c = centre, [ = min, ] = max)")
         out.append("# OFFSET shifts the clip's 512 onto YOUR neutral pose.")
         out.append("# If a joint runs opposite to the Blender render, set")
         out.append("# INVERT[joint]=True. That does not invalidate OFFSET: the clip's")
@@ -302,14 +382,18 @@ def main():
             elif k == "[":
                 n = j.sel
                 lo, hi = j.limits.get(n, (None, None))
-                j.limits[n] = (j.target[n], hi if hi is not None else j.target[n])
-                print(f"\n{n} MIN = {j.target[n]}")
+                # Record ONLY this end. Filling the other end with the same value
+                # produces a zero-width range that silently freezes the joint.
+                j.limits[n] = (j.target[n], hi)
+                other = "" if hi is not None else "   (still need ] at the other end)"
+                print(f"\n{n} MIN = {j.target[n]}{other}")
                 continue
             elif k == "]":
                 n = j.sel
                 lo, hi = j.limits.get(n, (None, None))
-                j.limits[n] = (lo if lo is not None else j.target[n], j.target[n])
-                print(f"\n{n} MAX = {j.target[n]}")
+                j.limits[n] = (lo, j.target[n])      # only this end -- see "[" above
+                other = "" if lo is not None else "   (still need [ at the other end)"
+                print(f"\n{n} MAX = {j.target[n]}{other}")
                 continue
             elif k == "c":
                 j.centre[j.sel] = j.target[j.sel]

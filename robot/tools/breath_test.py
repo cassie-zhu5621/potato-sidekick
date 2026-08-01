@@ -26,7 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
 from robot.scs import Bus, open_bus
 from robot import calibration as cal
 
-IDS = {"pan": 1, "tilt": 2, "nod": 3}
+from robot import IDS  # single source of truth: robot/__init__.py
 UNITS_PER_DEG = 1023 / 300.0
 POSE = {"pan": 25.0, "tilt": -12.0, "nod": 0.0}     # = S5_TRACK / end of S4
 RATE_HZ = 30

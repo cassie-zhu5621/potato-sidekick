@@ -37,7 +37,7 @@ from robot.scs import Bus, open_bus
 PORT = os.environ.get("NOTICEBOT_PORT")
 BAUD = int(os.environ.get("NOTICEBOT_BAUD", 1_000_000))
 
-IDS = {"pan": 1, "tilt": 2, "nod": 3}
+from robot import IDS  # single source of truth: robot/__init__.py
 CENTER = 512
 
 # Fallback values, used only if calibration.py is missing. Deliberately narrow --

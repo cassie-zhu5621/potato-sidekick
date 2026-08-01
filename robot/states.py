@@ -118,15 +118,15 @@ STATES = {
         # 0.0: this one IS the announcement -- it should arrive with the
         # turn, calling you before the robot has finished arriving
         screen="noticed", enter="a confirmed finding", exit="auto -> S7b",
-        note="found it: turn to you, crane forward, head comes up to meet "
-             "your eyes."),
+        note="found it: attention-get (turn to you) then DIRECT (turn to the "
+             "finding, crane toward it, hold). Ends on the object."),
 
     "S7b": dict(
         clip="S7b", loop=True, then=None, hue="green",
         sfx=None, sfx_at=0.0, sfx_flash=None, sfx_loop=False,
         screen="noticed", enter="auto", exit="OK pressed, or 30 s ignored -> S5",
-        note="beckoning -- head tossing UP on the accent, come and look. "
-             "The upward accent is what separates this from a nod."),
+        note="ensure -- alternating you <-> the finding: 'come' (toss at you) / "
+             "'there' (hold on it). The alternation is the confirmation."),
 
     "S8_ERROR": dict(
         clip="S8_ERROR", loop=True, then=None, hue="alarm",

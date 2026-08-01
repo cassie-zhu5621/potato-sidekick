@@ -28,3 +28,19 @@ it holds two coordinate frames (in Blender positive nod is UP; on the bus a
 higher unit is DOWN), and getting that backwards makes the robot perform every
 gesture inside out.
 """
+
+# The joint -> servo ID map, defined once.
+#
+# This lived independently in pose.py, tools/jog.py, tools/play_on_hardware.py
+# and tools/breath_test.py. Four copies of a fact that changes whenever a servo
+# is swapped between joints -- and a partial edit produces the worst failure
+# mode this robot has: jog.py agreeing that the "tilt" key moves the neck while
+# the player drives that same ID as pan, so clips play with two channels
+# transposed and nothing errors.
+#
+# IDs live in each servo's EEPROM, not in the wiring. Both GVS sockets on the
+# FE-URT2 are the same electrical bus, so re-routing the loom cannot change
+# them. Only physically swapping a servo between joints, or running
+# check_bus.py --set-id, changes what belongs here.
+IDS = {"pan": 1, "tilt": 2, "nod": 3}
+ORDER = ["pan", "tilt", "nod"]

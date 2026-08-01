@@ -5,9 +5,12 @@
 import bpy
 from mathutils import Matrix
 
-BASE_H = 0.04
-NECK_H = 0.018     # tilt joint sits just above the base (no filler neck)
-HEAD_R = 0.035
+# Joint heights measured from "model for simulation.stl" (2026-07-30).
+# build_shell.py repositions the pivots to these same numbers, so the two
+# cannot drift; they are duplicated here only so the rig alone is already right.
+BASE_H = 0.035     # pan axis, world z
+NECK_H = 0.029     # tilt axis sits BASE_H + NECK_H = 64mm
+HEAD_R = 0.035     # proxy head only; the real head is 85 x 54 x 55
 
 def fix(name, parent_name, loc):
     o = bpy.data.objects.get(name)

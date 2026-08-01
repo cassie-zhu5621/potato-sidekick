@@ -9,7 +9,12 @@ import bpy
 import math
 from mathutils import Matrix
 
-NOD_H = 0.08      # distance tilt joint -> nod joint (= stalk length); 8cm thin neck
+NOD_H = 0.111     # tilt axis -> nod axis, AS BUILT: STL measured 116mm (64 -> 180)
+                  # and the neck was then shortened 5mm on the prototype so the
+                  # head sits lower. Was 0.08. The longer neck makes every tilt
+                  # angle travel ~39% further at the head than the old rig;
+                  # see HANDOFF_motion_design.md. build_shell.py owns this number
+                  # via NECK_SHORTEN and will overwrite the pivot anyway.
 HEAD_R = 0.035
 
 tilt = bpy.data.objects.get("tilt_pivot")

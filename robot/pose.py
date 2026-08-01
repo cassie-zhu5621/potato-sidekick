@@ -11,7 +11,7 @@ mentions.
 from robot import calibration as cal
 
 JOINTS = ("pan", "tilt", "nod")
-IDS = {"pan": 1, "tilt": 2, "nod": 3}
+from robot import IDS  # single source of truth: robot/__init__.py
 CENTER = 512                    # the clips' neutral, in raw exported units
 UNITS_PER_DEG = 1023 / 300.0
 
