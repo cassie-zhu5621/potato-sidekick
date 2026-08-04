@@ -94,8 +94,10 @@ STATES = {
         note="a nod of assent -- got it. The downward accent is the affirmation."),
 
     "S4_PLAN": dict(
-        # S4 ONLY ACQUIRES. It sweeps, captures, and ends LEVEL at the chosen
-        # pan; arriving at the thing is S5A_SETTLE, and S5A ONLY RUNS IF THE
+        # S4 ONLY ACQUIRES. It sweeps, captures, and ends LEVEL at the final
+        # shutter pan. ClipPlayer trims the authored return to the +25-degree
+        # template: that direction has no basis while the VLM is still deciding.
+        # Arriving at the selected thing is S5A_SETTLE, and S5A ONLY RUNS IF THE
         # TARGET CHANGED. The periodic sweep is additive, so it often changes
         # nothing, and a robot that performed "I have chosen" every five minutes
         # about the object it was already watching would be making a movement

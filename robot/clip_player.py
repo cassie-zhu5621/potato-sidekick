@@ -53,6 +53,35 @@ LED_HEARTBEAT_S = 0.30  # must stay well under the firmware's 500 ms fallback,
                         # silently hands the LED back to the local one
 
 
+def trim_s4_return(frames, pan_slop_units=2):
+    """Remove S4's return-to-template after its final shutter station.
+
+    Returning to the template pan before the VLM answers visually claims a
+    direction that has not been chosen. Find the last shutter rise and retain
+    its full dwell up to the first real departure from that bearing.
+    """
+    rises, in_flash = [], False
+    for i, frame in enumerate(frames):
+        level = frame.get("led")
+        if level is None:
+            continue
+        if level >= LED_FLASH_HIGH and not in_flash:
+            rises.append(i)
+            in_flash = True
+        elif level <= LED_FLASH_LOW:
+            in_flash = False
+    if not rises:
+        return frames
+    last_rise = rises[-1]
+    station_pan = frames[last_rise]["pan"]
+    cut = len(frames)
+    for i in range(last_rise + 1, len(frames)):
+        if abs(frames[i]["pan"] - station_pan) > pan_slop_units:
+            cut = i
+            break
+    return frames[:cut]
+
+
 def load_clip(path, loops=False):
     """-> list of {t, pan, tilt, nod} in COMMANDED units. Clamping is a bug in
     the clip, so it is reported once here rather than swallowed per frame."""
@@ -133,6 +162,12 @@ class ClipPlayer:
                             for st in ST.STATES.values())
                 fr, clamped, has_nod, has_led = load_clip(
                     os.path.join(clips_dir, fn), loops=loops)
+                if name == "S4_PLAN":
+                    original_n = len(fr)
+                    fr = trim_s4_return(fr)
+                    if verbose and len(fr) != original_n:
+                        print(f"[player] S4: trimmed {original_n - len(fr)} return "
+                              f"frames; holding final shutter pan until planner")
                 self.clips[name] = fr
                 if clamped and verbose:
                     print(f"[player] !! {name}: {clamped} would be clamped -- "
@@ -522,6 +557,10 @@ class ClipPlayer:
                     continue
                 if spec["then"]:
                     with self._lock:
+                        if self.state == "S4_PLAN":
+                            # Enter the planning hold at the final shutter bearing.
+                            # The VLM replaces it only after selecting a target.
+                            self._pan_pending = frames[-1]["pan"]
                         # An armed override wins over the declared default, and
                         # is consumed either way so it cannot steer a later
                         # state. Unarmed, S4 -> S5B and the re-crane is an
