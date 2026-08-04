@@ -106,7 +106,15 @@ def main():
                     if t and t > 50:
                         st, detail = WARN, f"{detail}, running hot"
                     check(f"{name} (id {sid})", st, detail)
-                    # torque state is invisible until something fails to move
+                    # Adopt the actual position as the goal before enabling
+                    # torque.  Otherwise a stale goal register can make the
+                    # joint snap back during what is meant to be a read-only
+                    # readiness check.
+                    p = bus.read_pos(sid)
+                    if p is None:
+                        check(f"{name} current position", FAIL, "no reply")
+                        continue
+                    bus.write_pos(sid, p, time_ms=0, speed=0)
                     bus.torque(sid, True)
                 check("torque enabled on all three", OK)
             finally:

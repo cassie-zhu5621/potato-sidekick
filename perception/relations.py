@@ -299,7 +299,9 @@ class RelationEngine:
                     for lab, v in nd.items():
                         if lab in nd0 and (v <= nd0[lab] * (1 - 1.5 * self.approach_frac)
                                            or v >= nd0[lab] * (1 + 1.5 * self.approach_frac)):
-                            truth[7] = True; break
+                            truth[7] = True
+                            viz.setdefault("approach", []).append(lab)
+                            break
 
         # ---- 8 lean-in (torso tilt off image-vertical AND near a WATCHED object) ----
         # bare torso tilt (seated / turned / fisheye edge) is not a lean; require the tilt to be

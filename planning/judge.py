@@ -1,5 +1,5 @@
 """
-judge.py — the VLM JUDGMENT BRAIN (step ④ of the flow).
+judge.py — the Gemini VLM JUDGMENT BRAIN (step ④ of the flow).
 
 Runs ONLY on candidates the cheap gate let through, ONCE per event. It looks at the real
 IMAGE (its strength) with the stable relation structure as grounding ("here is what is
@@ -20,11 +20,13 @@ runs end-to-end with no API key — for wiring tests and for you to plug your ri
 """
 
 from __future__ import annotations
-import os, re, json, base64, hashlib
+import os, re, hashlib
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Sequence
 
-MODEL = os.environ.get("SECONDATTN_JUDGE_MODEL", "claude-haiku-4-5")
+from planning.gemini_provider import call_json, model_name
+
+MODEL = model_name(os.environ.get("NOTICEBOT_GEMINI_JUDGE_MODEL"))
 
 
 # --------------------------------------------------------------------------- #
@@ -138,46 +140,67 @@ def _prompt(rel: str, taste: ReportabilityTaste, confirm: str = "", story: str =
             lines.append(f"\nThe image is a SINGLE frame — one instant, NOT a sequence. Detected here:"
                          f" {story}. Describe ONLY what is visible in this one frame. Do NOT narrate any"
                          f' before/after, arrival, or "then moved..." — there is no evidence for it.')
+    if confirm:
+        lines.append("The supplied images are ordered temporal evidence from the same view.")
     js = '{"axes": {"people":0-1,"relevance":0-1,"consequence":0-1,"continuity":0-1}, '
-    js += '"confirmed": true|false, ' if confirm else ''
-    js += '"note": "<one field note, <=16 words>"}'
+    js += ('"confirmed": true|false, "note": "<one field note, <=16 words>", '
+           '"feedback": "<one short Chinese sentence for the user>"}')
     lines.append(f"\nReturn ONLY JSON: {js}")
     return "\n".join(lines)
 
 
-def judge(jpeg: Optional[bytes], graph, taste: ReportabilityTaste,
+JUDGE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "axes": {
+            "type": "object",
+            "properties": {a: {"type": "number"} for a in AXES},
+            "required": list(AXES),
+            "additionalProperties": False,
+        },
+        "confirmed": {"type": "boolean"},
+        "note": {"type": "string"},
+        "feedback": {"type": "string"},
+    },
+    "required": ["axes", "confirmed", "note", "feedback"],
+    "additionalProperties": False,
+}
+
+
+def judge(jpeg: Optional[bytes | Sequence[bytes]], graph, taste: ReportabilityTaste,
           delta_added=None, model: str = MODEL, confirm: str = "", story: str = "") -> dict:
     """Judge one gated moment. Returns {worth, why, note, axes, confirmed}.
     `confirm`: optional relation claim (e.g. "a person gazing at the cup") — the VLM first
     VERIFIES it against the image (the precision half of the gate→VLM split for the
     designed-relation branch); unconfirmed moments come back with worth=0."""
     rel = relations_text(graph, delta_added) if graph is not None else ""
-    if os.environ.get("SECONDATTN_OFFLINE") == "1" or jpeg is None:
-        out = _offline(jpeg, story or rel, taste)       # offline: narrate from the trace if present
+    images = ([jpeg] if isinstance(jpeg, (bytes, bytearray)) else list(jpeg or []))
+    if os.environ.get("SECONDATTN_OFFLINE") == "1" or not images:
+        seed_image = images[0] if images else None
+        out = _offline(seed_image, story or rel, taste)
         if story:
             out["note"] = f"[offline] {story[:64]}"
+        out["feedback"] = f"我注意到：{(confirm or story or rel or '一个事件')[:48]}"
         out["confirmed"] = True
     else:
-        import anthropic
-        client = anthropic.Anthropic()
-        b64 = base64.standard_b64encode(jpeg).decode()
-        msg = client.messages.create(
-            model=model, max_tokens=200,
-            messages=[{"role": "user", "content": [
-                {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}},
-                {"type": "text", "text": _prompt(rel, taste, confirm, story)}]}])
-        text = "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
         try:
-            s, e = text.index("{"), text.rindex("}") + 1
-            raw = json.loads(text[s:e])
+            labels = (["t-1.0s", "t-0.5s", "t0_onset", "t+0.5s", "t+1.0s"]
+                      if len(images) == 5 else [f"panel_{i}" for i in range(len(images))])
+            raw, text = call_json(
+                _prompt(rel, taste, confirm, story), JUDGE_SCHEMA,
+                images=images, labels=labels, model=model, max_output_tokens=256,
+            )
             out = {"axes": {a: float(raw.get("axes", {}).get(a, 0.0)) for a in AXES},
                    "note": str(raw.get("note", ""))[:120],
-                   "confirmed": bool(raw.get("confirmed", True))}
-        except Exception:
-            out = {"axes": {a: 0.0 for a in AXES}, "note": f"parse-fail: {text[:40]}",
+                   "feedback": str(raw.get("feedback", ""))[:160],
+                   "confirmed": bool(raw.get("confirmed", not confirm))}
+        except Exception as exc:
+            out = {"axes": {a: 0.0 for a in AXES}, "note": f"Gemini error: {str(exc)[:60]}",
+                   "feedback": "",
                    "confirmed": False}
     worth = taste.compose(out["axes"]) if out["confirmed"] else 0.0
     return {"worth": worth, "why": taste.why(out["axes"]), "note": out["note"],
+            "feedback": out.get("feedback", ""),
             "axes": out["axes"], "confirmed": out["confirmed"]}
 
 

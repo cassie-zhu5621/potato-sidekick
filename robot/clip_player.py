@@ -152,7 +152,19 @@ class ClipPlayer:
         self._want = None            # state requested by the conductor
         self._stop = False
         self._lock = threading.Lock()
-        self.cur = dict(centre_units())      # last COMMANDED pose
+        # The first transition must be timed from where the hardware actually is,
+        # not from the calibrated centre.  Assuming centre here makes start(home)
+        # see a zero-distance move and use MIN_MOVE_MS even when a relaxed head was
+        # left tens of degrees away -- exactly the unsafe case on first startup.
+        expected = centre_units()
+        self.bus.flush_input()
+        actual = {name: self.bus.read_pos(sid) for name, sid in IDS.items()}
+        self.cur = {
+            name: int(actual[name]) if actual[name] is not None else expected[name]
+            for name in JOINTS
+        }
+        if self.verbose and self.cur != expected:
+            print(f"[player] startup pose read from hardware: {self.cur}")
         self._pose_changed_at = time.perf_counter()
         self.loops_done = 0
         self.lag_ms = 0.0

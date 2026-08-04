@@ -1,0 +1,16 @@
+{
+  "version": "2.2",
+  "relations": [
+    {"id": 1, "key": "gazing_at", "description": "a person's head orientation is directed at an object", "object_arity": "required", "evidence_chain": ["face/head ray", "ray hits bound object box"]},
+    {"id": 2, "key": "joint_attention", "description": "two or more people look at the same target", "object_arity": "optional", "evidence_chain": ["multiple gaze rays", "shared convergence or target"]},
+    {"id": 3, "key": "eye_contact", "description": "a person looks directly at the robot/camera", "object_arity": "none", "evidence_chain": ["face forward vector", "camera direction threshold"]},
+    {"id": 4, "key": "pointing_reaching", "description": "an extended arm is directed at an object or person", "object_arity": "optional", "evidence_chain": ["shoulder/elbow/wrist landmarks", "extended arm ray hits target"]},
+    {"id": 5, "key": "proxemic_zone", "description": "two people are within close interpersonal distance", "object_arity": "none", "evidence_chain": ["tracked pelvis centers", "distance normalized by shoulder width"]},
+    {"id": 6, "key": "f_formation", "description": "two people face each other in a conversational formation", "object_arity": "none", "evidence_chain": ["person orientations", "mutual facing within social zone"]},
+    {"id": 7, "key": "approach_depart", "description": "a person moves toward or away from an object, person, or robot", "object_arity": "optional", "evidence_chain": ["stable person track", "normalized distance trend over time"]},
+    {"id": 8, "key": "lean_in", "description": "a person leans their torso toward an object or work surface", "object_arity": "required", "evidence_chain": ["shoulder/hip torso angle", "near bound target"]},
+    {"id": 9, "key": "hands_on", "description": "a person's hand is on or manipulating an object", "object_arity": "required", "evidence_chain": ["wrist landmark", "inside or near bound target box", "sustained contact"]},
+    {"id": 10, "key": "gathering", "description": "the number of co-present people changes or a group forms", "object_arity": "none", "evidence_chain": ["stable person count", "count or cluster transition"]},
+    {"id": 11, "key": "turn_taking", "description": "control of a shared artifact passes from one person to another", "object_arity": "required", "evidence_chain": ["stable person tracks", "wrist contact with bound artifact", "controller identity changes"]}
+  ]
+}

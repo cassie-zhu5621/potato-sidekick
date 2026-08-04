@@ -1,0 +1,10 @@
+# Local CV stack: Grounding DINO + MediaPipe Tasks + tests.
+# Install this file instead of the full robot/speech stack when bringing up CV.
+numpy
+opencv-contrib-python
+mediapipe
+torch
+transformers
+pillow
+ultralytics
+pytest

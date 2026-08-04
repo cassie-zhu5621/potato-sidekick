@@ -126,7 +126,7 @@ and draws the idle screen with a big green PTT and a red STOP.
 Everything in tier 1, plus:
 
 ```bash
-export ANTHROPIC_API_KEY=sk-...      # the planner and the story narrator
+export GEMINI_API_KEY=...            # the planner and five-frame event confirmer
 python3 noticebot_loop.py --list-cams
 ```
 
@@ -138,19 +138,18 @@ Stage sensor — **square is the giveaway, not size.**
 ### First run: go offline
 
 ```bash
-python3 noticebot_loop.py --cam 0 --cores3 --serve --offline
+python3 noticebot_loop.py --cam 0 --cores3 --serve --offline --no-stt --feedback console
 ```
 
-`--offline` makes story captions come from the grounded CV trace instead of a
-VLM call. Confirm the comic strip, the NOTICED feed and the screens all work
+`--offline` disables all Gemini calls and uses deterministic Planner/Judge output.
+Confirm the motion, plan installation and screens work
 before you add the network to the list of things that might be wrong.
 
 Then open <http://localhost:8000> and watch for these three lines in the
 terminal. A missing one tells you which layer did not come up:
 
 ```
-[cv]  ready (yolo)
-[stt] whisper ready                    ← do not press PTT before this appears
+[cv]  ready (gdino)
 [cores3] /dev/cu.usbmodemXXXX answered PING
 ```
 
@@ -161,7 +160,7 @@ one waiting for it.
 ### The real thing
 
 ```bash
-python3 noticebot_loop.py --cam 0 --cores3 --serve
+python3 noticebot_loop.py --cam 0 --cores3 --serve --no-stt --feedback console
 ```
 
 Walk one round to confirm the whole chain:
@@ -174,12 +173,15 @@ Walk one round to confirm the whole chain:
    while the VLM is still deciding** — that is correct, not a hang.
 5. The plan lands: THE PLAN panel fills with watch entries, the head turns to the
    richest angle, screen changes to `tracking...`.
-6. Press `f` in the terminal to force a finding — the robot looks up, the
-   NOTICED tab shows `collecting a story: … 1/10 panels`, and about six seconds
-   later a comic strip appears.
+6. Stage the requested event. CV opens a candidate, Gemini confirms five temporal
+   frames, and the terminal prints exactly one `[FEEDBACK] ...` line. No S7 motion
+   happens in the default console mode.
 7. Press **OK** on the board, or leave it 30 s.
 8. Press **STOP** at any point — the robot returns to idle *and* the watch-spec
    is torn down.
+
+After calibration and the console E2E are both proven, `--feedback robot` allows
+confirmed events to enter S7. The `f` key remains a manual motion override.
 
 ### Useful flags
 
@@ -189,7 +191,8 @@ Walk one round to confirm the whole chain:
 | `--no-cv` | no detector or pose. THE PLAN stays empty; `f` is the only finding |
 | `--no-cam` | servos + CoreS3 only |
 | `--no-stt` | no Whisper; type requests into the web UI instead |
-| `--detector yoloworld` | open vocabulary — the VLM's tiers re-prompt the detector live |
+| `--detector gdino` | default open vocabulary detector — the VLM's tiers re-prompt it live |
+| `--detector yoloworld --cv-hz 4` | tested lower-latency open-vocabulary path (requires Ultralytics) |
 | `--feed-dir <path>` | where findings and sweeps are written |
 
 ### Where a session ends up
@@ -201,7 +204,7 @@ frame_<id>.jpg               the comic strip of one noticed moment
 thumb_<id>.jpg               its card in the feed
 attention_log.jsonl          one line per record: note, story, truth vector, worth
 sweeps/<timestamp>/
-    panorama.jpg             the contact sheet the VLM actually read
+    panorama.jpg             local researcher visualization; Gemini read independent views
     pan_+030.jpg …           each angle, with the VLM's boxes drawn by tier
     plan.json                seen / detect / focus, the watch-spec, and coverage
 ```
@@ -222,5 +225,5 @@ something it never actually saw.
 | robot drives into its end stop | `calibration.py` is not this build's — re-measure with `jog.py` |
 | screen shows something other than the nine screens | old firmware; reflash |
 | first PTT fails, second works | you pressed before `[stt] whisper ready` |
-| THE PLAN panel is empty | no `ANTHROPIC_API_KEY`, or you passed `--no-cv` |
+| THE PLAN panel is empty | no `GEMINI_API_KEY`, or you passed `--no-cv` |
 | NOTICED stays 0 after a finding | wait out the 6 s linger; the tab shows `+1` while collecting |

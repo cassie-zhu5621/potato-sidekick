@@ -325,4 +325,7 @@ expect(not ok, "very low avg_logprob rejected -- hallucination")
 
 print("\n" + "=" * 60)
 print(f"{len(fails)} failure(s)" if fails else "all paths pass")
-sys.exit(1 if fails else 0)
+if __name__ == "__main__":
+    sys.exit(1 if fails else 0)
+if fails:
+    raise AssertionError("; ".join(fails))

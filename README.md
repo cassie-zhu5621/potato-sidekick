@@ -4,8 +4,8 @@ A placed sidekick that watches for one thing you asked it to watch for, and tell
 when it happens in real-time.
 
 You say *"the roundtable area at my lab — people usually have meetings here."*
-The robot turns its head across the room, photographs each angle, and sends all
-of them to a VLM in a **single** call. The VLM enumerates what is there, sorts it
+The robot turns its head across the room, photographs each angle, and sends the
+five independent images to Gemini in a **single** call. Gemini enumerates what is there, sorts it
 into what matters and what is only context, and compiles your sentence into a
 **watch-spec** over an eleven-row vocabulary of social relations (gaze, joint
 attention, pointing, F-formation, turn-taking …). CV then evaluates that spec
@@ -51,11 +51,60 @@ python3 robot/clip_player.py                    # every state
 python3 robot/clip_player.py --all --cores3 /dev/cu.usbmodemXXXX     # every state, with LED and sound
 
 # tier 2 — the full loop
-export ANTHROPIC_API_KEY=sk-...                         # VLM API
-python3 noticebot_loop.py --cam 0 --cores3 /dev/cu.usbmodemXXXX --serve      # run WEBUI on localhost:8000 
+export GEMINI_API_KEY=...                               # Planner + five-frame confirm
+python3 noticebot_loop.py --cam 0 --cores3 /dev/cu.usbmodemXXXX --serve --feedback console
 ```
 
 Before trusting a session: `python3 robot/tools/preflight.py` — a check for connection. will print a GO if everything's ok.
+
+### Local CV smoke test
+
+The default detector is Grounding DINO; MediaPipe Tasks supplies pose and face
+landmarks. Bring up only that stack, without the robot, camera, VLM API, or
+speech dependencies:
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements-cv.txt
+.venv/bin/python -m pytest tests/test_cv_unit.py -q
+.venv/bin/python perception/cv_smoke_test.py path/to/person.jpg \
+  --vocab person,cup,laptop
+
+# optional faster open-vocabulary adapter (same smoke-test contract)
+.venv/bin/python perception/cv_smoke_test.py path/to/person.jpg \
+  --detector yoloworld --vocab person,cup,laptop
+```
+
+The first real run downloads `IDEA-Research/grounding-dino-tiny` into the local
+Hugging Face cache. Later runs are local. Inspect `session_feed/cv_smoke/result.json`
+and `overlay.jpg` for boxes, pose, face count, device, and per-stage latency.
+
+The explicit real-model integration test uses the same function:
+
+```bash
+CV_TEST_IMAGE=path/to/person.jpg .venv/bin/python -m pytest \
+  tests/test_cv_integration.py -m integration -s
+```
+
+That integration test exercises both Grounding DINO and YOLO-World. Grounding
+DINO remains the default; choose `--detector yoloworld` when latency matters.
+
+### Gemini video trigger smoke test
+
+Put `GEMINI_API_KEY=...` in the ignored `.env` file, then pass one local video and
+one text trigger condition:
+
+```bash
+python3 planning/gemini_video_trigger.py path/to/video.mp4 \
+  "当有人挥手时触发反馈"
+```
+
+The default is the low-latency profile: `gemini-3.5-flash-lite`, minimal
+thinking, low media resolution, a 256-token output cap, and priority service
+tier. Every value can be overridden through `.env` or CLI flags. The command
+prints structured JSON containing `feedback_trigger`, confidence,
+evidence timestamps, and a short Chinese feedback message. The uploaded test file
+is deleted from the Gemini Files API after the request.
 
 ---
 

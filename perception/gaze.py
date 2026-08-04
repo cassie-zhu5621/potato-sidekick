@@ -136,6 +136,7 @@ class HeadPoseEstimator:
             min_face_presence_confidence=0.3,
             min_tracking_confidence=0.3))
         self._ts = 0
+        self.last_face_count = 0
 
     def estimate(self, frame_bgr: np.ndarray) -> List[GazeRay]:
         import cv2
@@ -144,6 +145,7 @@ class HeadPoseEstimator:
                              data=cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB))
         self._ts += 33                              # synthetic ms clock, must be monotonic
         res = self._lm.detect_for_video(img, self._ts)
+        self.last_face_count = len(res.face_landmarks or [])
         if not res.face_landmarks:
             return []
         # pinhole intrinsics guess: focal ≈ frame width. Good enough for direction.
@@ -576,7 +578,7 @@ if __name__ == "__main__":
                     help="debug: draw shoulder-elbow-wrist + elbow angle/visibility (see why no arm ray)")
     ap.add_argument("--detect", action="store_true",
                     help="also run a detector and highlight gazed-at / pointed-at objects")
-    ap.add_argument("--detector", default="yolo", help="yolo | yoloworld | gdino (with --detect)")
+    ap.add_argument("--detector", default="gdino", help="gdino | yolo | yoloworld (with --detect)")
     ap.add_argument("--vocab", default="person,laptop,monitor,keyboard,cup,bottle,chair,desk,"
                                        "bag,potted plant,book,phone")
     ap.add_argument("--conf", type=float, default=0.3)

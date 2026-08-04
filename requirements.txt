@@ -1,9 +1,12 @@
 # ---- core pipeline -------------------------------------------------------
-opencv-python
+opencv-contrib-python  # includes cv2 modules required by MediaPipe; avoid two cv2 wheels
 numpy
-anthropic            # the VLM planner and the story narrator
+google-genai         # Gemini Flash video + text trigger smoke test
+python-dotenv        # load local API keys from the ignored .env file
 mediapipe            # FaceLandmarker / PoseLandmarker (models in perception/weights/)
-ultralytics          # YOLO and YOLO-World detectors (weights auto-download)
+torch                # Grounding DINO runtime (MPS on Apple Silicon, CPU fallback)
+transformers         # Grounding DINO processor and model
+pillow               # image bridge used by the Grounding DINO processor
 
 # ---- the robot -----------------------------------------------------------
 pyserial             # the CoreS3 link
@@ -17,5 +20,5 @@ faster-whisper       # transcription. The first call downloads the model, which
                      # takes longer than the state machine's STT timeout -- the
                      # loop warms it at startup so no participant ever waits.
 
-# ---- optional ------------------------------------------------------------
-transformers         # only for --detector gdino (Grounding DINO)
+# ---- optional faster detector interface ---------------------------------
+ultralytics          # --detector yoloworld / yolo; tested alternative to 1 Hz GDINO

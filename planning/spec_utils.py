@@ -82,14 +82,27 @@ def _focus_ok(e, viz, focus):
     if not want:
         return True
     ids = set(e.get("all", [])) | set(e.get("any", [])) | set(e.get("then", []))
-    if not (ids & {1, 4}):                     # no gaze/point target to verify -> people/lean/hands: allow
+    object_directed = ids & {1, 4, 7, 8, 9, 11}
+    if not object_directed:
         return True
     dets = viz.get("dets", [])
     targets = set()
-    for _, h in viz.get("hits", []):
+    allowed_hits = set()
+    if 1 in ids: allowed_hits.add("gazing-at")
+    if 4 in ids: allowed_hits.add("pointing-at")
+    if 8 in ids: allowed_hits.add("lean-in")
+    for kind, h in viz.get("hits", []):
+        if kind not in allowed_hits:
+            continue
         di = h.get("det") if isinstance(h, dict) else None
         if isinstance(di, int) and 0 <= di < len(dets):
             targets.add(str(dets[di].label).lower())
+    if 9 in ids:
+        targets.update(str(label).lower() for _, label in viz.get("handson", []))
+    if 11 in ids:
+        targets.update(str(row[0]).lower() for row in viz.get("handoff", []))
+    if 7 in ids:
+        targets.update(str(label).lower() for label in viz.get("approach", []))
     return bool(targets & want)
 
 def spec_summary(spec):

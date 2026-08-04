@@ -47,3 +47,8 @@ build/
 .idea/
 .vscode/
 *.swp
+docs/GENSORS_DESIGN_NOTES.md
+docs/inspiration.md
+
+# --- local secrets --------------------------------------------------------
+.env

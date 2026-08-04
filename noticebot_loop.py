@@ -34,6 +34,7 @@ Run:
 """
 from __future__ import annotations
 import argparse, os, sys, threading, time
+from collections import deque
 
 import cv2
 
@@ -46,6 +47,7 @@ from robot.pose import IDS
 from robot import states as ST                    
 from robot.pose import UNITS_PER_DEG, resolve 
 from session.session_flow import SessionFlow, transcript_usable 
+from planning.event_frames import select_temporal_frames
 
 # The five S4 stations, as keyboard stand-ins for the web UI's pan buttons. Used
 # in S6 to re-aim: the tap said "wrong direction", not "wrong task", so only the
@@ -53,7 +55,7 @@ from session.session_flow import SessionFlow, transcript_usable
 PAN_KEYS = {"z": 60.0, "x": 30.0, "c": 0.0, "v": -30.0, "b": -60.0}
 
 SETTLE_MS = 180.0        # stillness required before a frame is usable
-PERCEIVE_HZ = 4.0        # how often perception is offered a frame
+DEFAULT_PERCEIVE_HZ = 1.0  # Grounding DINO default; YOLO-World can use --cv-hz 4
 
 
 # --------------------------------------------------------------------------- #
@@ -73,6 +75,8 @@ class HeadCam:
         if not self.cap.isOpened():
             raise RuntimeError(f"cannot open camera {index} -- try --list-cams")
         self.latest, self.seq, self._stop = None, 0, False
+        self.event_frames = deque(maxlen=40)  # ~4 seconds at 10 Hz, JPEG-compressed
+        self._last_event_frame = 0.0
         threading.Thread(target=self._run, daemon=True).start()
         t0 = time.time()
         while self.latest is None:
@@ -88,6 +92,13 @@ class HeadCam:
             ok, fr = self.cap.read()
             if ok:
                 self.latest, self.seq = fr, self.seq + 1
+                now = time.time()
+                if now - self._last_event_frame >= 0.1:
+                    ok_jpg, jpg = cv2.imencode(
+                        ".jpg", fr, [cv2.IMWRITE_JPEG_QUALITY, 82])
+                    if ok_jpg:
+                        self.event_frames.append((now, jpg.tobytes()))
+                        self._last_event_frame = now
             else:
                 time.sleep(0.05)
 
@@ -299,11 +310,15 @@ def main():
     ap.add_argument("--no-cv", action="store_true",
                     help="no detector/pose/relations. THE PLAN panel stays empty "
                          "and findings come only from the 'f' key.")
-    ap.add_argument("--detector", default="yolo",
+    ap.add_argument("--detector", default="gdino",
                     choices=["yolo", "yoloworld", "gdino", "mock"])
     ap.add_argument("--vocab", default="person,laptop,chair,cup,bottle,book,"
                                        "cell phone,backpack,keyboard,mouse")
     ap.add_argument("--conf", type=float, default=0.3)
+    ap.add_argument("--cv-hz", type=float,
+                    default=float(os.environ.get("NOTICEBOT_CV_HZ", DEFAULT_PERCEIVE_HZ)),
+                    help="perception samples per second (default 1 for Grounding DINO; "
+                         "try 4 with YOLO-World)")
     ap.add_argument("--persist", type=int, default=2,
                     help="frames a relation must hold before it counts")
     ap.add_argument("--cooldown", type=float, default=60.0,
@@ -322,8 +337,16 @@ def main():
                     help="mean pixel change that counts as a new keyframe when "
                          "the truth vector did not change")
     ap.add_argument("--offline", action="store_true",
-                    help="no VLM narration; the note is the grounded trace")
+                    help="no Gemini calls; use deterministic planner/judge results")
+    ap.add_argument("--feedback", choices=["console", "robot"], default="console",
+                    help="confirmed-event output; console is the safe default and "
+                         "does not enter S7 or fire CoreS3 feedback")
     a = ap.parse_args()
+
+    if a.cv_hz <= 0:
+        ap.error("--cv-hz must be greater than zero")
+    if a.offline:
+        os.environ["SECONDATTN_OFFLINE"] = "1"
 
     if a.list_cams:
         list_cams()
@@ -522,6 +545,7 @@ def main():
             # you." and the sentence on the page are the same claim, and the page
             # should not be the last to know what the robot just acknowledged.
             ctxd["request"] = val
+            ctxd["plan_generation"] = int(ctxd.get("plan_generation", 0)) + 1
             if view is not None:
                 view.transcript = val
                 view.context = val
@@ -541,6 +565,7 @@ def main():
             # kept updating, entries kept satisfying, and findings could still be
             # recorded for a task the participant had cancelled.
             sweep.active = False
+            ctxd["plan_generation"] = int(ctxd.get("plan_generation", 0)) + 1
             if view is not None:
                 view.executor, view.spec = None, None
                 view.context, view.transcript = "", ""
@@ -558,12 +583,12 @@ def main():
         elif kind == "log":
             print(f"[flow] {val}")
 
-    def run_planner(request):
+    def run_planner(request, generation):
         """Compile a request into a watch-spec and INSTALL it in the view.
 
         Runs at the END of S4, not on the S2->S3 edge, because S4 IS the planning:
         the head sweeps its stations collecting one pure frame each, and those
-        frames -- tiled into a single contact sheet -- are what the VLM reads. One
+        frames -- sent as independently labelled images -- are what Gemini reads. One
         call over the whole room beats one call per frame, and it is the only way
         the enumeration can cover angles the robot is not currently facing.
         """
@@ -571,16 +596,21 @@ def main():
         try:
             from planning.planner import plan
 
-            def plan_fn(context, jpeg):
-                r = plan(context, jpeg)
-                if r.get("spec") is None:     # transient truncation -> one retry
-                    print("[planner] no spec; retrying once ...")
-                    r = plan(context, jpeg)
+            def plan_fn(context, jpegs):
+                r = plan(context, jpegs)
+                if r.get("spec") is None or r.get("violations"):
+                    print("[planner] invalid result; retrying once ...")
+                    r = plan(context, jpegs)
                 return r
 
             res, meta = sweep.plan(request, plan_fn, UI)
-            ctxd["spec"] = (res or {}).get("spec")
             v = (res or {}).get("violations") or []
+            if generation != ctxd.get("plan_generation"):
+                print("[planner] stale result discarded")
+                return
+            if (res or {}).get("spec") is None or v:
+                raise ValueError("invalid Gemini plan: " + "; ".join(map(str, v)))
+            ctxd["spec"] = res["spec"]
             print(f"[planner] {len(v)} violation(s); "
                   f"watch={len((ctxd['spec'] or {}).get('watch', []) or [])} entries")
             if v:
@@ -664,10 +694,28 @@ def main():
     ctxd = {}
     ctx, last_state, last_perceive, last_pub, last_level = {}, None, 0.0, 0.0, 0.0
     shown = None            # the last frame the overlay was computed FROM
+    event_frames = cam.event_frames if cam is not None else deque(maxlen=40)
+    event_candidates = []                 # wait through t+1.0 before Gemini confirm
+    confirmed_findings = []               # worker -> main-loop handoff
     from planning.sweep_plan import Sweep
     sweep = Sweep(feed_dir=a.feed_dir)
     os.makedirs(a.feed_dir, exist_ok=True)
     stt.warm()              # load Whisper now, not under the first participant
+
+    def event_jpegs(onset):
+        """Five nearest raw frames at -1,-.5,0,+.5,+1 seconds."""
+        return select_temporal_frames(event_frames, onset)
+
+    def confirm_candidate(candidate):
+        from planning.judge import ReportabilityTaste, judge
+        taste = story.taste if story is not None else ReportabilityTaste()
+        entry = candidate["entry"]
+        claim = entry.get("label", "requested event")
+        if entry.get("on"):
+            claim += f" on {entry['on']}"
+        result = judge(candidate["images"], None, taste, confirm=claim)
+        confirmed_findings.append((candidate, result))
+
     try:
         while True:
             snap = player.snapshot()
@@ -723,7 +771,8 @@ def main():
                     # left S4 -> the sweep is complete. Plan off-thread: the call
                     # is seconds and the loop still owes the LED a heartbeat.
                     threading.Thread(target=run_planner,
-                                     args=(ctxd.get("request", ""),),
+                                     args=(ctxd.get("request", ""),
+                                           ctxd.get("plan_generation", 0)),
                                      daemon=True).start()
                 last_state = snap["state"]
 
@@ -737,6 +786,20 @@ def main():
 
             # ---- every device is an event source; SessionFlow owns the rules
             events = []
+            while confirmed_findings:
+                candidate, decision = confirmed_findings.pop(0)
+                if candidate["generation"] != ctxd.get("plan_generation"):
+                    print("[confirm] stale candidate discarded")
+                    continue
+                if not decision.get("confirmed"):
+                    print(f"[confirm] rejected: {decision.get('note', '')}")
+                    continue
+                feedback = decision.get("feedback") or decision.get("note") or candidate["entry"].get("label")
+                print(f"[FEEDBACK] {feedback}")
+                if a.feedback == "robot":
+                    ctxd["entry"] = candidate["entry"]
+                    ctxd["frame"] = candidate["frame"]
+                    ui_events.append("finding")
             while pending:
                 line = pending.pop(0)
                 if "PTT_DOWN" in line:      events.append("ptt_down")
@@ -782,13 +845,13 @@ def main():
                         # than swinging to a hold pose it has no reason to prefer.
                         player.arm_pan_deg(snap["pose_deg"]["pan"])
                 if (frame is not None and settled and watching
-                        and now - last_perceive > 1.0 / PERCEIVE_HZ):
+                        and now - last_perceive > 1.0 / a.cv_hz):
                     last_perceive = now
                     ctx["frames_seen"] = ctx.get("frames_seen", 0) + 1
                     if view is not None:
                         fired = view.step(frame, now)
                         # Keep the frame the overlay was COMPUTED FROM. Drawing a
-                        # 4 Hz skeleton onto a 30 fps stream is what made the
+                        # A sampled skeleton onto a faster raw stream is what made the
                         # skeleton lag behind the person -- the boxes were never
                         # late, they were just painted on somebody else's frame.
                         shown = view.draw(frame.copy())
@@ -805,13 +868,30 @@ def main():
                     if ev:
                         ui_events.append(ev)
 
-            # A watch entry firing IS the finding. This is what the `f` key was
-            # standing in for; `f` still works, because a detector that misses
-            # during a session must not end the session.
+            # CV only proposes a candidate. Gemini sees ordered raw frames before
+            # anything is reported or allowed to enter the S7 feedback motion.
             for e in fired:
-                print(f"[watch] fired: {e.get('label')}")
-                ctxd["entry"] = e          # act() opens the story; see there
-                ui_events.append("finding")
+                print(f"[watch] candidate: {e.get('label')}")
+                event_candidates.append({
+                    "entry": dict(e), "onset": now, "due": now + 1.0,
+                    "generation": ctxd.get("plan_generation"),
+                    "frame": frame.copy() if frame is not None else None,
+                })
+
+            for candidate in list(event_candidates):
+                if candidate["generation"] != ctxd.get("plan_generation"):
+                    event_candidates.remove(candidate)
+                    print("[confirm] cancelled stale candidate before API call")
+                    continue
+                if now < candidate["due"]:
+                    continue
+                event_candidates.remove(candidate)
+                candidate["images"] = event_jpegs(candidate["onset"])
+                if len(candidate["images"]) != 5:
+                    print("[confirm] skipped: five event frames unavailable")
+                    continue
+                threading.Thread(target=confirm_candidate, args=(candidate,),
+                                 daemon=True).start()
 
             # Open bursts advance whenever there is a frame and an open burst --
             # NOT only while watching. A story that stops collecting because the

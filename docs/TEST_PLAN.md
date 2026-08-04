@@ -236,7 +236,7 @@ First autonomous layer. Detector only, no API key, so a failure is CV or wiring
 and cannot be the model.
 
 In `noticebot_loop.perceive()`: score each settled S4 frame with
-`perceive.make_detector("yolo", vocab)` and keep the best index.
+`perceive.make_detector("gdino", vocab)` and keep the best index.
 
 **Pass:** 5 scores per sweep, one per station, each attributable to the correct
 pan unit. The sweep runs right-to-left (Blender +60° → −60°), and INVERT mirrors
@@ -288,7 +288,7 @@ breaking and re-forming it fires again.
 ## Stage 9 — judge / VLM
 
 `judge.judge(jpeg, graph, taste)` on the S5 frame that fired, before `S7a`.
-Needs `ANTHROPIC_API_KEY`. Test `--offline` first so the plumbing is proven
+Needs `GEMINI_API_KEY`. Test `SECONDATTN_OFFLINE=1` first so the plumbing is proven
 without the model in the loop.
 
 **Pass:** a confirmed report reaches `S7a` within a latency you are willing to

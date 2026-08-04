@@ -51,12 +51,12 @@ from planning.spec_utils import _expand, _FilteredDetector, _focus_ok, spec_summ
 class PlanView:
     """One frame in, an annotated frame plus any fired entries out.
 
-    Built lazily by the caller: constructing it imports mediapipe and a YOLO
+    Built lazily by the caller: constructing it imports mediapipe and a detector
     checkpoint, which takes seconds and must not happen while a participant is
     waiting.
     """
 
-    def __init__(self, detector="yolo", vocab=("person",), conf=0.3,
+    def __init__(self, detector="gdino", vocab=("person",), conf=0.3,
                  persist=2, cooldown=60.0, tau_gap=3.0, lean_deg=25.0):
         # live relevance state, updated by each plan. `allow` is the closed-YOLO
         # whitelist (synonym-expanded to match whatever labels the detector
@@ -173,7 +173,7 @@ class PlanView:
                 col, th = (150, 150, 150), 1
             x1, y1, x2, y2 = map(int, d.box)
             cv2.rectangle(fr, (x1, y1), (x2, y2), col, th, cv2.LINE_AA)
-            draw_text(fr, f"{d.label} {float(getattr(d, 'conf', 0)):.2f}",
+            draw_text(fr, f"{d.label} {float(getattr(d, 'score', 0)):.2f}",
                       (x1, max(12, y1 - 6)), col, 0.55, 2)
         for p in self.viz.get("people", []):
             if getattr(p, "raw", None):

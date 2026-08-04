@@ -12,7 +12,7 @@ everything else is a library it drives.
                                ▼              ▼
                        ┌───────────────┐  ┌──────────────────────┐
                        │   robot/      │  │     planning/        │
-                       │ clip player   │  │ sweep → ONE VLM call │
+                       │ clip player   │  │ sweep → ONE Gemini call│
                        │ → SCS0009 ×3  │  │ → watch-spec + tiers │
                        └───────┬───────┘  └──────────┬───────────┘
                      pose, deg │                     │ detect / focus vocab
@@ -42,9 +42,9 @@ punctuation) goes to S8 instead, visibly.
 station** — no detector, nothing drawn. Annotating a frame before the model reads
 it feeds our own guesses back as its judgement.
 
-**End of S4: the single VLM call.** The frames are tiled into a grid contact
-sheet (a grid, not a wide strip: it preserves each view's resolution so the model
-can box accurately) and sent once. Back comes:
+**End of S4: the single Gemini call.** The five raw frames are sent as separately
+labelled spatial images in one request. A grid is written only for local researcher
+visualization and is not model input. Back comes:
 
 - `seen` — everything in the room
 - `detect` — context tier: enriches, cannot trigger
@@ -65,10 +65,10 @@ satisfied; `_focus_ok` refuses any gaze or point that did not land on a focus
 object. Without that last gate, "someone looked at something" fires on every
 chair in the room.
 
-**A fired entry → S7.** The moment is *beginning*, not over, so a burst opens and
-keeps shooting — keyframed on truth-vector change, not on a timer — through a
-linger window past the relation dropping. The panels are narrated from what the
-CV actually detected in each one, then published as one comic strip.
+**A fired entry → candidate → Gemini confirm.** A raw-frame ring buffer selects
+five ordered frames at t−1, t−0.5, onset, t+0.5 and t+1 seconds. Only a confirmed
+candidate is reported. The safe default is one console feedback line; S7 motion
+requires explicit `--feedback robot`.
 
 **S6, "not that one."** A body tap during S5. The watch-spec survives; only the
 direction changes. If nobody answers within 15 s the robot moves to the *next-best*

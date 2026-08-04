@@ -29,7 +29,7 @@ the brief) / Grounding DINO / YOLOv8. See `YoloWorldDetector` stub at the bottom
 from __future__ import annotations
 import math
 from dataclasses import dataclass, field
-from typing import List, Tuple, Optional, Dict, Protocol
+from typing import Any, List, Tuple, Optional, Dict, Protocol
 
 Box = Tuple[float, float, float, float]   # x1, y1, x2, y2 in pixels
 
@@ -305,16 +305,26 @@ class YoloWorldDetector:
             raise SystemExit("YOLO-World needs ultralytics. Install it:\n"
                              "    pip install ultralytics\n"
                              "(or run the batch with --mock to test the plumbing).")
+        vocabulary = _normalise_vocabulary(vocabulary)
+        if not vocabulary:
+            raise ValueError("YOLO-World vocabulary must contain at least one label")
+        self.model_name = weights
         self.model = YOLO(weights)            # auto-downloads yolov8s-world.pt on first use
         self.model.set_classes(vocabulary)
+        self.vocab = vocabulary
         self.conf = conf
         self.device = device                  # None=auto, "cpu", or "0" for first GPU
     def set_vocab(self, vocabulary):          # dynamic open-vocab: planner 'detect' drives the prompt
-        vocabulary = [str(v).strip() for v in vocabulary if str(v).strip()]
+        vocabulary = _normalise_vocabulary(vocabulary)
         if vocabulary:
             self.model.set_classes(vocabulary)
+            self.vocab = vocabulary
     def detect(self, image) -> List[Detection]:
         r = self.model.predict(image, conf=self.conf, device=self.device, verbose=False)[0]
+        if self.device is None:
+            actual = getattr(self.model, "device", None)
+            if actual is not None:
+                self.device = str(actual)
         names = r.names
         out = []
         for b in r.boxes:
@@ -355,7 +365,7 @@ class GroundingDinoDetector:
     but MUCH slower (transformer + text encoder) — fine for the scanning rig (a few frames per
     pose), likely too slow for a 30fps stream. Same .detect() interface.
 
-        pip install transformers
+        pip install torch transformers pillow
         det = GroundingDinoDetector(["person","chair","desk","robot arm"])
     """
     def __init__(self, vocabulary: List[str], model="IDEA-Research/grounding-dino-tiny",
@@ -363,58 +373,121 @@ class GroundingDinoDetector:
         try:
             import torch
             from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
-        except ImportError:
-            raise SystemExit("Grounding DINO needs transformers:  pip install transformers")
+        except ImportError as exc:
+            raise SystemExit("Grounding DINO needs torch, transformers and pillow. Install "
+                             "requirements-cv.txt first.") from exc
         if device is None:
             device = ("mps" if torch.backends.mps.is_available()
                       else "cuda" if torch.cuda.is_available() else "cpu")
         self.device = device
         self.conf = conf
+        self.model_name = model
         self.proc = AutoProcessor.from_pretrained(model)
         self.model = AutoModelForZeroShotObjectDetection.from_pretrained(model).to(device)
-        # GD wants lowercase phrases separated by ". "; remember the order to map labels back.
-        self.vocab = [v.strip().lower() for v in vocabulary]
-        self.prompt = ". ".join(self.vocab) + "."
+        self.model.eval()
+        self.vocab = _normalise_vocabulary(vocabulary)
+        if not self.vocab:
+            raise ValueError("Grounding DINO vocabulary must contain at least one label")
         print(f"[detector] Grounding DINO ({model}) on {device}")
 
     def set_vocab(self, vocabulary):          # dynamic open-vocab: planner 'detect' drives the prompt
-        vocab = [str(v).strip().lower() for v in vocabulary if str(v).strip()]
+        vocab = _normalise_vocabulary(vocabulary)
         if vocab:
             self.vocab = vocab
-            self.prompt = ". ".join(self.vocab) + "."
 
     def detect(self, image) -> List[Detection]:
         import torch, cv2
         from PIL import Image
         H, W = image.shape[:2]
         pil = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-        inputs = self.proc(images=pil, text=self.prompt, return_tensors="pt").to(self.device)
-        with torch.no_grad():
+        try:
+            return self._detect(pil, (H, W), torch)
+        except (NotImplementedError, RuntimeError) as exc:
+            # Grounding DINO occasionally reaches an operator that a particular
+            # PyTorch/MPS release has not implemented. A smoke test should expose
+            # the fallback rather than make Apple Silicon look completely broken.
+            if self.device != "mps":
+                raise
+            print(f"[detector] MPS inference failed ({exc}); retrying on CPU")
+            self.device = "cpu"
+            self.model = self.model.to("cpu")
+            return self._detect(pil, (H, W), torch)
+
+    def _detect(self, pil, image_hw, torch) -> List[Detection]:
+        H, W = image_hw
+        # Current Transformers accepts a batch of label lists. Keeping the
+        # vocabulary structured preserves phrases such as "cell phone" and
+        # "robot arm" all the way into the returned detections.
+        inputs = self.proc(images=pil, text=[self.vocab], return_tensors="pt").to(self.device)
+        with torch.inference_mode():
             outputs = self.model(**inputs)
-        # transformers renamed box_threshold -> threshold (~v4.51); support both.
-        import inspect
-        kw = ("threshold" if "threshold" in inspect.signature(
-              self.proc.post_process_grounded_object_detection).parameters else "box_threshold")
-        res = self.proc.post_process_grounded_object_detection(
-            outputs, inputs.input_ids, text_threshold=self.conf,
-            target_sizes=[(H, W)], **{kw: self.conf})[0]
-        out = []
-        for box, score, label in zip(res["boxes"], res["scores"], res["labels"]):
-            x1, y1, x2, y2 = [float(v) for v in box.tolist()]
-            lab = (label or "").strip() or "object"          # GD may return a phrase
-            out.append(Detection(lab.split()[0] if lab else "object", (x1, y1, x2, y2), float(score)))
-        return out
+        result = _postprocess_grounding_dino(
+            self.proc, outputs, inputs.input_ids, (H, W), self.conf)
+        return _grounding_dino_detections(result, self.vocab)
+
+
+def _normalise_vocabulary(vocabulary) -> List[str]:
+    """Normalise planner labels without destroying multi-word object names."""
+    seen, out = set(), []
+    for value in vocabulary or []:
+        label = " ".join(str(value).strip().lower().split())
+        if label and label not in seen:
+            out.append(label)
+            seen.add(label)
+    return out
+
+
+def _postprocess_grounding_dino(processor, outputs, input_ids, image_hw, conf):
+    """Compatibility shim for the Transformers threshold keyword rename."""
+    import inspect
+    fn = processor.post_process_grounded_object_detection
+    threshold_kw = ("threshold" if "threshold" in inspect.signature(fn).parameters
+                    else "box_threshold")
+    return fn(outputs, input_ids, text_threshold=conf,
+              target_sizes=[image_hw], **{threshold_kw: conf})[0]
+
+
+def _as_python(value: Any):
+    if hasattr(value, "item"):
+        return value.item()
+    return value
+
+
+def _grounding_dino_detections(result, vocabulary) -> List[Detection]:
+    """Convert HF post-processing output to the detector-neutral data model.
+
+    Transformers releases have returned either ``text_labels`` (phrases) or
+    ``labels`` (phrases/indices). Supporting both here keeps the model adapter
+    small and makes this conversion unit-testable without loading checkpoints.
+    """
+    labels = result.get("text_labels")
+    if labels is None:
+        labels = result.get("labels", [])
+    detections = []
+    for box, score, raw_label in zip(result.get("boxes", []),
+                                     result.get("scores", []), labels):
+        values = box.tolist() if hasattr(box, "tolist") else list(box)
+        x1, y1, x2, y2 = (float(v) for v in values)
+        label_value = _as_python(raw_label)
+        if isinstance(label_value, (int, float)) and int(label_value) == label_value:
+            index = int(label_value)
+            label = vocabulary[index] if 0 <= index < len(vocabulary) else str(index)
+        else:
+            label = " ".join(str(label_value or "object").strip().lower().split())
+        detections.append(Detection(label or "object", (x1, y1, x2, y2),
+                                    float(_as_python(score))))
+    return detections
 
 
 def make_detector(kind: str, vocabulary: List[str], conf: float = 0.3, device: str = None):
-    """Factory so callers can swap detectors with one flag. kind in {yoloworld, yolo, gdino}."""
-    kind = (kind or "yoloworld").lower()
+    """Factory so callers can swap detectors. Grounding DINO is the default."""
+    kind = (kind or "gdino").lower()
     if kind in ("yoloworld", "world", "yw"):
         return YoloWorldDetector(vocabulary, conf=conf, device=device)
     if kind in ("yolo", "coco", "closed"):
         return YoloDetector(conf=conf, device=device)
     if kind in ("gdino", "groundingdino", "dino", "gd"):
         return GroundingDinoDetector(vocabulary, conf=conf, device=device)
-    raise SystemExit(f"unknown --detector '{kind}' (use: yoloworld | yolo | gdino)")
-
-
+    if kind in ("mock", "none"):
+        return MockDetector([])
+    raise SystemExit(f"unknown --detector '{kind}' (use: gdino | yoloworld | yolo | mock)")

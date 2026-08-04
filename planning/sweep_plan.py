@@ -9,8 +9,8 @@ THE ORDER MATTERS, and it is the whole architecture:
   annotations. Drawing on a frame before the VLM reads it is feeding the model
   our own guesses and calling the result its judgement.
 
-  The frames are tiled into a GRID contact sheet (not a wide strip: a grid keeps
-  each view's resolution, so the VLM can box accurately) and sent in ONE call.
+  The frames are sent as INDEPENDENT labelled images in ONE Gemini call. A grid
+  is still written locally for the researcher, but is never sent to the model.
   Back comes the enumeration (`seen`), the tiering (`detect` = context,
   `focus` = may trigger), per-object boxes, and the watch-spec.
 
@@ -31,7 +31,7 @@ import numpy as np
 from perception.overlay import C_RED, C_GREEN
 from perception.gaze import draw_text
 
-CW, CH = 480, 360          # contact-sheet cell size
+CW, CH = 480, 360          # local researcher-grid cell size (not Gemini input)
 
 
 class Sweep:
@@ -61,7 +61,7 @@ class Sweep:
 
     # ---- at the end of S4 ------------------------------------------------- #
     def plan(self, context, plan_fn, ui=None):
-        """-> (spec, meta) . `plan_fn(context, jpeg)` is planner.plan.
+        """-> (spec, meta) . `plan_fn(context, jpegs)` is planner.plan.
 
         Falls back to a single-frame plan when the sweep caught nothing, because
         a session must not be lost to an empty capture.
@@ -81,15 +81,14 @@ class Sweep:
             r, c = divmod(i, cols)
             grid[r * CH:r * CH + CH, c * CW:c * CW + CW] = cv2.resize(fr, (CW, CH))
             cells.append({"pan": pan, "fr": fr, "x0": c * CW, "y0": r * CH})
-        GW, GH = cols * CW, rows * CH
-
-        print(f"[sweep] one VLM call over a {cols}x{rows} grid of {N} pure frames")
-        res = plan_fn(context, cv2.imencode(".jpg", grid)[1].tobytes())
+        jpegs = [cv2.imencode(".jpg", fr)[1].tobytes() for _, fr in grabbed]
+        print(f"[sweep] one Gemini call with {N} independent pure frames")
+        res = plan_fn(context, jpegs)
         spec = (res or {}).get("spec")
         if spec is None:
             return res, None
 
-        # map each VLM box (normalised over the whole grid) back to its own frame
+        # Gemini returns a view_index and coordinates normalised within that view.
         ts = time.strftime("%Y%m%d_%H%M%S")
         out = os.path.join(self.feed_dir, "sweeps", ts)
         os.makedirs(out, exist_ok=True)
@@ -97,20 +96,17 @@ class Sweep:
         for b in (spec.get("boxes") or []):
             try:
                 x0, y0, x1, y1 = [float(v) for v in list(b.get("box", []))[:4]]
+                i = int(b.get("view_index", -1))
             except Exception:
                 continue
-            gx0, gy0, gx1, gy1 = x0 * GW, y0 * GH, x1 * GW, y1 * GH
-            c = int(((gx0 + gx1) / 2) // CW)
-            r = int(((gy0 + gy1) / 2) // CH)
-            i = r * cols + c
             if not (0 <= i < N):
                 continue
             cell = cells[i]
             fh, fw = cell["fr"].shape[:2]
-            lx0 = max(0.0, (gx0 - cell["x0"]) * fw / CW)
-            ly0 = max(0.0, (gy0 - cell["y0"]) * fh / CH)
-            lx1 = min(float(fw), (gx1 - cell["x0"]) * fw / CW)
-            ly1 = min(float(fh), (gy1 - cell["y0"]) * fh / CH)
+            lx0 = max(0.0, min(1.0, x0)) * fw
+            ly0 = max(0.0, min(1.0, y0)) * fh
+            lx1 = max(0.0, min(1.0, x1)) * fw
+            ly1 = max(0.0, min(1.0, y1)) * fh
             if lx1 - lx0 >= 2 and ly1 - ly0 >= 2:
                 per[i].append((str(b.get("label", "?")),
                                str(b.get("tier", "context")), [lx0, ly0, lx1, ly1]))
@@ -170,7 +166,7 @@ class Sweep:
                 "richest_pan": int(round(best[1])), "richest_score": best[0]}
         with open(os.path.join(out, "plan.json"), "w") as f:
             json.dump(meta, f, indent=2)
-        print(f"[sweep] {len(shots)} frames + grid -> {out}   richest pan "
+        print(f"[sweep] {len(shots)} independent frames + local grid -> {out}   richest pan "
               f"{best[1]:+.0f}deg (score {best[0]})")
         self.last = meta
         self.shots = []

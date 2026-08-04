@@ -424,10 +424,7 @@ def main():
         pass
     finally:
         print("\n" + j.block())
-        try:
-            print(f"\nsaved -> {j.save()}")
-        except Exception as e:
-            print(f"could not write calibration.py: {e}")
+        print("\nnot saved (press p during the session to update calibration.py)")
         for sid in IDS.values():
             try:
                 bus.torque(sid, False)

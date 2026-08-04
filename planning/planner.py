@@ -1,5 +1,5 @@
 """
-planner.py — the VLM PLANNER: context (+ optionally a frame) -> a watch-spec.
+planner.py — the Gemini VLM PLANNER: context + independent spatial views -> watch-spec.
 
 The VLM-first half of the new architecture (see relation_table.md). SINGLE SOURCE for the
 planner prompt and watch-spec schema, used by BOTH the preliminary study and the future
@@ -17,42 +17,25 @@ Offline mode (SECONDATTN_OFFLINE=1): deterministic fake specs, keyless plumbing 
 """
 
 from __future__ import annotations
-import base64, hashlib, json, os
-from typing import Optional
+import hashlib, json, os
+from pathlib import Path
+from typing import Optional, Sequence
 
-# Default = sonnet: the preliminary study's numbers are sonnet numbers, so the live system
-# should match them. Try haiku later as a cost experiment (override via env var).
-MODEL = os.environ.get("SECONDATTN_PLANNER_MODEL", "claude-sonnet-4-6")
+from planning.gemini_provider import DEFAULT_MODEL, call_json, model_name
 
-# One line per row — the planner sees THIS summary of relation_table.md. Keep the wording
-# in sync with the table; these strings are part of what the study studies.
-VOCAB_VERSION = "v2.1"  # v2.1 (2026-06-14): disambiguate gathering(10)=group-size-change vs approach(7)=
-                        #   single person toward a place; rebalanced examples so 'comes to my desk' picks 7.
-                        #   (v3 reserved for the big survey-driven scenario update.)
-                        # v2 (2026-06-10): +row 11, from the plan-time probe (turn-taking, 14 mentions)
-VOCAB = {
-    1:  "gazing-at — a person's head orientation is directed at an object",
-    2:  "joint-attention — two or more people look at the same target",
-    3:  "eye-contact — a person looks directly at the robot/camera",
-    4:  "pointing/reaching — an extended arm is directed at an object or person",
-    5:  "proxemic-zone — two people are within close interpersonal distance (Hall's intimate/personal zone)",
-    6:  "F-formation — two people stand/sit facing each other in a conversational formation",
-    7:  "approach/depart — a person is moving toward or away from an object, a person, or the robot",
-    8:  "lean-in — a person leans their torso toward an object or work surface (engagement posture)",
-    9:  "hands-on — a person's hand is on / manipulating an object",
-    10: "gathering — the NUMBER of co-present people changes / a group forms (use this for group size, NOT for one person; for a single person coming toward a place or object, use approach(7))",
-    11: "turn-taking — control of a shared artifact (keyboard, tool, object) passes from one person to another",
-}
+MODEL = model_name()
+
+_CATALOG_PATH = Path(__file__).resolve().parents[1] / "schemas" / "relation_catalog.v2.json"
+_CATALOG = json.loads(_CATALOG_PATH.read_text(encoding="utf-8"))
+VOCAB_VERSION = _CATALOG["version"]
+VOCAB = {row["id"]: f'{row["key"]} — {row["description"]}'
+         for row in _CATALOG["relations"]}
 
 # Object-arity of each relation: does it NEED a target object, MAY it take one, or is it people-only?
 #   required = meaningless without an object  ->  the entry MUST name it in "on"
 #   optional = target may be an object OR a person/robot  ->  the VLM decides from context
 #   none     = about people only              ->  no "on"
-OBJECT_ARITY = {
-    1: "required", 8: "required", 9: "required", 11: "required",   # gaze / lean / hands / turn-taking
-    2: "optional", 4: "optional", 7: "optional",                    # joint-attn / pointing / approach
-    3: "none", 5: "none", 6: "none", 10: "none",                    # eye-contact / prox / F-form / gathering
-}
+OBJECT_ARITY = {row["id"]: row["object_arity"] for row in _CATALOG["relations"]}
 
 # Deliberately ABSTRACT (id-composition -> meaning), with varied shapes (single, pair,
 # triple), so the examples neither leak answers to the study scenarios nor anchor the
@@ -68,9 +51,8 @@ Pick the MOST SPECIFIC relation for the context: 'comes to my desk' is approach(
 _SCHEMA_COMMON = ('"seen": [<ALL object nouns you can see in the frame right now, before any '
                   'filtering — for debugging what the planner perceived>], '
                   '"boxes": [{"label": "<object>", "tier": "focus"|"context", '
-                  '"box": [x0, y0, x1, y1]}  — one entry per visible INSTANCE you can localize; '
-                  'box as fractions 0-1 of the WHOLE image (if the image is a grid of several '
-                  'camera views, box each instance in whatever view it appears)], '
+                  '"view_index": <0-based image index>, "box": [x0, y0, x1, y1]} — one entry '
+                  'per visible INSTANCE; box coordinates are fractions 0-1 of THAT view], '
                   '"detect": [<lowercase object nouns worth detecting for THIS context; the robot '
                   'detects ONLY these, so omit irrelevant furniture>], '
                   '"focus": [<the subset of detect that is the POINT of this delegate; ONLY focus '
@@ -95,8 +77,60 @@ SCHEMA_FREE = ('{"watch": [{'
                '"within_s": <0.5-30>, "label": "<short name>"}], ' + _SCHEMA_COMMON + "}")
 
 
+def output_schema(grammar: str = "restricted") -> dict:
+    entry_properties = {
+        "all": {"type": "array", "items": {"type": "integer"}},
+        "any": {"type": "array", "items": {"type": "integer"}},
+        "not": {"type": "array", "items": {"type": "integer"}},
+        "then": {"type": "array", "items": {"type": "integer"}},
+        "on": {"type": ["string", "null"]},
+        "within_s": {"type": "number"},
+        "label": {"type": "string"},
+    }
+    entry = {
+        "type": "object",
+        "properties": entry_properties,
+        "required": (["all", "within_s", "label"] if grammar == "restricted"
+                     else ["within_s", "label"]),
+        "additionalProperties": False,
+    }
+    return {
+        "type": "object",
+        "properties": {
+            "watch": {"type": "array", "items": entry},
+            "seen": {"type": "array", "items": {"type": "string"}},
+            "boxes": {"type": "array", "items": {
+                "type": "object",
+                "properties": {
+                    "label": {"type": "string"},
+                    "tier": {"type": "string", "enum": ["focus", "context"]},
+                    "view_index": {"type": "integer", "minimum": 0},
+                    "box": {"type": "array", "items": {
+                        "type": "number", "minimum": 0, "maximum": 1,
+                    }, "minItems": 4, "maxItems": 4},
+                },
+                "required": ["label", "tier", "view_index", "box"],
+                "additionalProperties": False,
+            }},
+            "detect": {"type": "array", "items": {"type": "string"}},
+            "focus": {"type": "array", "items": {"type": "string"}},
+            "single_ok": {"type": "array", "items": {"type": "integer"}},
+            "duration_s": {"type": "number"},
+            "why": {"type": "string"},
+            "missing": {"type": ["string", "null"]},
+        },
+        "required": ["watch", "seen", "boxes", "detect", "focus", "single_ok",
+                     "duration_s", "why", "missing"],
+        "additionalProperties": False,
+    }
+
+
 def build_prompt(context: str, grammar: str = "restricted") -> str:
-    rows = "\n".join(f"  {i}. {d}" for i, d in VOCAB.items())
+    by_id = {row["id"]: row for row in _CATALOG["relations"]}
+    rows = "\n".join(
+        f"  {i}. {d}; evidence: {' -> '.join(by_id[i]['evidence_chain'])}"
+        for i, d in VOCAB.items()
+    )
     if grammar == "free":
         compose = ("Each watch entry may combine fields: \"all\" (AND), \"any\" (OR), "
                    "\"not\" (must be absent), \"then\" (ordered sequence within the window). "
@@ -126,8 +160,9 @@ but a single relation is the right answer when it alone carries the news.
 If this context needs a relation the vocabulary CANNOT express, name it in "missing".
 
 Also decide which OBJECTS matter, working in this order:
-1. If a camera frame is provided, first ENUMERATE every object you can actually see in it and list
-   them ALL in "seen" (this is the debug view of what you perceived). If no frame is given, infer
+1. If camera views are provided, they are INDEPENDENT spatial views labelled IMAGE 0..N-1,
+   not a temporal sequence and not a contact sheet. First ENUMERATE every object actually visible
+   across them and list them ALL in "seen". If no frame is given, infer
    the plausible objects from the context and put them in "seen".
 2. Judge each object's RELEVANCE to the context. Put in "detect" only the lowercase nouns worth
    detecting here (people + the things the moment is about); the robot detects ONLY these, so leave
@@ -136,10 +171,9 @@ Also decide which OBJECTS matter, working in this order:
    TRIGGER a report; the rest merely add context.
 Also fill "boxes": box the FOCUS objects and the main CONTEXT objects only — you do NOT need to box
 every tiny or background item (keep it to roughly the most relevant ~12 per view). For each, give
-its label, its tier ("focus" or "context"), and a bounding box [x0,y0,x1,y1] as fractions 0-1 of the
-WHOLE image. If the image is a grid/contact-sheet of several camera views, box each instance in
-whichever view it appears (coordinates still over the whole image). Do NOT box ignored objects. Keep
-coordinates short (2 decimals).
+its label, tier, `view_index`, and a bounding box [x0,y0,x1,y1] as fractions 0-1 of THAT
+individual view. Do NOT merge coordinates across views. Do NOT box ignored objects. Keep coordinates
+short (2 decimals).
 
 3. When a watch entry is about a SPECIFIC object, name it in that entry's "on" field (a value from
    detect) — e.g. hands-on THE desk, gaze-at THE monitor. Object requirement per relation:
@@ -221,6 +255,14 @@ def validate(spec: dict, grammar: str = "restricted") -> list:
         if val is not None and (not isinstance(val, list)
                                 or not all(isinstance(x, str) for x in val)):
             v.append(f"{fld}: must be a list of strings")
+    for i, box in enumerate(spec.get("boxes", []) or []):
+        coords = box.get("box") if isinstance(box, dict) else None
+        view_index = box.get("view_index") if isinstance(box, dict) else None
+        if not (isinstance(view_index, int) and view_index >= 0):
+            v.append(f"boxes[{i}].view_index: must be a non-negative integer")
+        if not (isinstance(coords, list) and len(coords) == 4
+                and all(isinstance(x, (int, float)) and 0 <= x <= 1 for x in coords)):
+            v.append(f"boxes[{i}].box: must be four numbers in [0,1]")
     d = spec.get("duration_s", 600)
     if not (isinstance(d, (int, float)) and 60 <= d <= 14400):
         v.append(f"duration_s {d} out of [60,14400]")
@@ -259,34 +301,32 @@ def _offline(context: str, grammar: str) -> dict:
     if grammar == "free" and int(h[6], 16) % 2:
         entry = {"then": sorted({a, b}), "not": [c] if c not in (a, b) else [],
                  "within_s": 5.0, "label": "[offline] sequence"}
-    return {"watch": [entry], "single_ok": [c] if c not in (a, b) else [],
+    ids = entry.get("all", []) + entry.get("then", [])
+    if any(OBJECT_ARITY.get(r) == "required" for r in ids):
+        entry["on"] = "laptop"
+    return {"watch": [entry], "single_ok": [],
             "duration_s": 600, "why": f"[offline] {context[:40]}", "missing": None,
             "seen": ["person", "laptop", "cup", "dining table", "chair", "potted plant"],
-            "boxes": [{"label": "person", "tier": "focus", "box": [0.4, 0.3, 0.6, 0.9]}],
+            "boxes": [{"label": "person", "tier": "focus", "view_index": 0,
+                       "box": [0.4, 0.3, 0.6, 0.9]}],
             "detect": ["person", "laptop", "cup", "dining table"], "focus": ["person"]}
 
 
-def plan(context: str, jpeg: Optional[bytes] = None, model: str = MODEL,
+def plan(context: str, jpeg: Optional[bytes | Sequence[bytes]] = None, model: str = MODEL,
          temperature: float = 0.0, grammar: str = "restricted") -> dict:
     """-> {"spec":..., "violations":[...], "raw": text, "grammar": grammar}."""
     if os.environ.get("SECONDATTN_OFFLINE") == "1":
         spec = _offline(context, grammar)
         return {"spec": spec, "violations": validate(spec, grammar),
                 "raw": json.dumps(spec), "grammar": grammar}
-    import anthropic
-    client = anthropic.Anthropic()
-    content = []
-    if jpeg is not None:
-        content.append({"type": "image", "source": {"type": "base64",
-                        "media_type": "image/jpeg",
-                        "data": base64.standard_b64encode(jpeg).decode()}})
-    content.append({"type": "text", "text": build_prompt(context, grammar)})
-    msg = client.messages.create(model=model, max_tokens=8000, temperature=temperature,
-                                 messages=[{"role": "user", "content": content}])
-    text = "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
+    images = ([jpeg] if isinstance(jpeg, (bytes, bytearray))
+              else list(jpeg or []))
     try:
-        s, e = text.index("{"), text.rindex("}") + 1
-        spec = json.loads(text[s:e])
+        spec, text = call_json(
+            build_prompt(context, grammar), output_schema(grammar), images=images,
+            labels=[f"spatial_view_{i}" for i in range(len(images))], model=model,
+            max_output_tokens=4096,
+        )
         return {"spec": spec, "violations": validate(spec, grammar),
                 "raw": text, "grammar": grammar}
     except Exception as ex:

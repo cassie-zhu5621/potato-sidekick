@@ -159,8 +159,9 @@ if __name__ == "__main__":
     port = sys.argv[1] if len(sys.argv) > 1 else "/dev/tty.usbmodem101"
     link = CoreS3Link(port, on_input=lambda s: print("[cores3]", s))
     print(f"connected to {port}; running demo…  (Ctrl-C to stop)")
-    for cmd, arg in [("ARMED", ""), ("WATCH", "blue bottle on the shelf"),
-                     ("FOUND", ""), ("KEEP", ""), ("STEP", "STOP")]:
+    for cmd, arg in [("PING", ""), ("UI", "idle"), ("HUE", "COOL"),
+                     ("UI", "tracking"), ("NOTICED", "1"),
+                     ("UI", "noticed"), ("SFX", "EXCITED")]:
         link.event(cmd, arg)
         time.sleep(1.4)
     try:

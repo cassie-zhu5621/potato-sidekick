@@ -107,11 +107,10 @@ class WatchExecutor:
             ordered = (all_recent
                        and all(times[k + 1] - times[k] >= self.tau_gap
                                for k in range(len(times) - 1)))
-            # fallback: if the ordering is too tight to trust but the ids co-occur in the window,
-            # accept it AS 'and' (then never fires worse than and; it just isn't credited ordered).
-            all_co = all(self._held_within(r, t, win) for r in e["then"])
-            ok_then = ordered or all_co
-            tag = "ordered" if ordered else ("as-and" if all_co else "…")
+            # A sequence is never silently weakened to AND. Reversed or simultaneous
+            # relations are not the event the planner requested.
+            ok_then = ordered
+            tag = "ordered" if ordered else "…"
             then_detail = f" · seq {len(recent)}/{len(e['then'])} ({tag})"
         waiting = [r for r in e["all"] if r not in held]
         detail = (f"held {held}" if held else "") + (f" · waiting {waiting}" if waiting else "")
