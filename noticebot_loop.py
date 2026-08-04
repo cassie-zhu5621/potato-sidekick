@@ -343,12 +343,21 @@ def main():
     # link is created below, so the LED callback resolves it late
     holder = {}
 
+    # Counted, and reported at exit. "The LED did not change" has five different
+    # causes and they are indistinguishable by looking at the robot; a number
+    # splits them in half immediately. Zero sent = the laptop side (no --cores3,
+    # or every clip's led column is flat). Thousands sent and still nothing =
+    # the board side (firmware not reflashed, wrong port, or the Grove lead).
+    counts = {"led": 0, "sfx": 0}
+
     def on_led(level):
         if holder.get("link"):
+            counts["led"] += 1
             holder["link"].led(level)
 
     def on_sfx(name):
         if holder.get("link"):
+            counts["sfx"] += 1
             holder["link"].sfx(name)
 
     player = ClipPlayer(bus, a.clips, on_led=on_led, on_sfx=on_sfx)
@@ -363,6 +372,14 @@ def main():
             if not a.cores3:
                 sys.exit("no CoreS3 found (it greets with 'cores3_sidekick' on "
                          "boot; flashed and plugged in?)")
+        # A hand-typed --cores3 pointing at the SERVO adapter opens fine, accepts
+        # every write and lights nothing, with no error anywhere -- macOS names
+        # both usbmodem-<location id>, so they are easy to swap. --led-test has
+        # guarded this for a while; the main path had not.
+        elif port and os.path.realpath(a.cores3) == os.path.realpath(port):
+            sys.exit(f"--cores3 {a.cores3} is the SERVO bus, not the CoreS3. "
+                     f"Both are named usbmodem-<id>; use --cores3 on its own to "
+                     f"auto-detect by PING instead of guessing.")
         pending = []
 
         def on_input(line):
@@ -875,6 +892,15 @@ def main():
         print("\ninterrupted")
     finally:
         print(f"[loop] frames offered to perception: {ctx.get('frames_seen', 0)}")
+        print(f"[loop] LED updates sent: {counts['led']}, sounds: {counts['sfx']}")
+        if link and counts["led"] == 0:
+            print("[loop] !! ZERO LED updates -- the LAPTOP side. Either every "
+                  "clip's led column is flat (re-export: the generators write "
+                  "the envelope, export_clip samples it) or on_led never fired.")
+        elif not link:
+            print("[loop] no --cores3, so the antenna ran the board's own "
+                  "fallback breath the whole time. That is what 'the LED did "
+                  "not change' usually means.")
         player.stop()
         if cam:
             cam.close()
