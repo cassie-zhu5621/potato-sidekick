@@ -550,6 +550,16 @@ def main():
         elif kind == "noticed":
             if link:
                 link.event("NOTICED", int(val))
+            if int(val) == 0:
+                # STOP starts a fresh task. Clear only the live presentation;
+                # files in this E2E run remain on disk as the audit record.
+                if UI is not None:
+                    with UI.LOCK:
+                        UI.STATE["feed"] = []
+                        UI.STATE["thumbs"] = {}
+                        UI.STATE["frames"] = {}
+                        UI.STATE["collecting"] = []
+                return
             # EVERY finding opens a story, whatever produced it. This hangs off
             # the flow's `noticed` emission rather than off the detector, because
             # a finding has three possible sources -- a watch entry firing, the
@@ -621,6 +631,8 @@ def main():
             # kept updating, entries kept satisfying, and findings could still be
             # recorded for a task the participant had cancelled.
             sweep.active = False
+            if story is not None:
+                story.reset()
             ctxd["plan_generation"] = int(ctxd.get("plan_generation", 0)) + 1
             if view is not None:
                 view.executor, view.spec = None, None

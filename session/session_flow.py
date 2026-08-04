@@ -125,6 +125,11 @@ class SessionFlow:
             self.transcript = None       # STOP discards the task (STOP_DISCARDS_TASK)
             self._ptt_up_at = self._ptt_up_first_at = None
             self.plan_pending = False
+            # NOTICED is scoped to one participant task, not to the lifetime of
+            # the laptop process. Reset through the same output channel that
+            # normally increments it so CoreS3 and the browser stay in sync.
+            self.noticed = 0
+            self._emit("noticed", 0)
             self._go("S1_IDLE", "STOP -- task discarded, waiting for a new request")
             # Discarding the task has to reach PERCEPTION as well, not just the
             # motion. A robot that has visibly stopped while its watch-spec keeps

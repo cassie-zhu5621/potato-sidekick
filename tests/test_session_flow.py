@@ -130,9 +130,11 @@ for st_events in (["ptt_down"],
     f = flow()
     run(f, st_events, "")
     before = f.state
-    f.feed("stop")
+    out = f.feed("stop")
     expect(f.state == "S1_IDLE" and f.transcript is None,
            f"STOP from {before:<12} -> S1_IDLE, task discarded")
+    expect(f.noticed == 0 and ("noticed", 0) in out,
+           f"STOP from {before:<12} resets the noticed counter")
 
 print("\n--- tap only means 'not that' while watching ---")
 f = flow()

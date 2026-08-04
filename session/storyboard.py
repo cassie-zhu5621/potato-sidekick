@@ -50,7 +50,14 @@ class Storyboard:
         self.taste = ReportabilityTaste()
         self.bursts = []
         self.count = 0
+        self.generation = 0
         os.makedirs(feed_dir, exist_ok=True)
+
+    def reset(self):
+        """Cancel unfinished stories when STOP begins a fresh task."""
+        self.generation += 1
+        self.bursts.clear()
+        self.count = 0
 
     # ------------------------------------------------------------------ open --
     def open(self, entry, frame, truth, viz, idx):
@@ -58,6 +65,7 @@ class Storyboard:
         t = time.time()
         self.bursts.append({
             "label": entry.get("label", "noticed"), "idx": idx,
+            "generation": self.generation,
             "shots": [frame.copy()], "traces": [shot_trace(truth, viz)],
             "last_truth": dict(truth),
             "last_gray": cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY),
@@ -107,6 +115,9 @@ class Storyboard:
     def _finalize(self, b):
         """Narrate + publish. Off the main thread: this makes a network call and
         the live loop still owes the LED a heartbeat every 300 ms."""
+        if b.get("generation") != self.generation:
+            print(f"[story] cancelled after STOP: {b['label']}")
+            return
         n = len(b["shots"])
         strip = make_strip(b["shots"])
         story = " -> ".join(dict.fromkeys(b["traces"]))   # dedup, keep order
@@ -119,6 +130,11 @@ class Storyboard:
             except Exception as e:
                 print(f"[judge] error: {e} -- keeping the grounded trace as the note")
         note = f"{note} ({n}-shot story)"
+        # STOP can arrive while Gemini is narrating. Check again after the
+        # blocking call so an old task cannot repopulate the freshly cleared UI.
+        if b.get("generation") != self.generation:
+            print(f"[story] cancelled after STOP: {b['label']}")
+            return
         print(f"[MOMENT] {b['label']} :: {note}")
         fid = time.strftime("%Y%m%d_%H%M%S_") + f"{int(time.time() * 1000) % 1000:03d}"
         rec = {"time": time.strftime("%H:%M:%S"),
