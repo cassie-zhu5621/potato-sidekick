@@ -28,19 +28,35 @@ except ImportError:
     serial = None
 
 
-def find_cores3(exclude=(), timeout=1.2, baud=115200, verbose=True):
+def find_cores3(exclude=(), timeout=4.0, baud=115200, verbose=True):
     """-> port of the CoreS3, or None.
 
     Same problem as the servo adapter: macOS names both of them usbmodem-<location
     id>, so the paths move between sessions and cannot be told apart by name.
 
     Detection is by ASKING: send `EVT PING`, expect `IN PONG cores3_sidekick`.
-    An earlier version listened for the boot greeting instead, on the assumption
-    that opening the port would reset the board. That is true of a CH340/CP2102
-    with an auto-reset circuit, and false here -- the CoreS3 is an ESP32-S3 with
-    native USB CDC, which does not reboot when DTR is asserted, so the HELLO from
-    setup() never comes again. (Which is what you want mid-session; it just makes
-    for a useless detector.)
+
+    OPENING THE PORT DOES RESET THIS BOARD, and the previous version of this
+    function asserted the opposite. Measured on the bench: a bare open followed
+    by a read returns `IN HELLO cores3_sidekick v2` -- the greeting from setup()
+    -- which only happens if the board rebooted. So the old sequence lost every
+    time it mattered:
+
+        open (board reboots) -> sleep 150 ms -> reset_input_buffer() ->
+        write PING -> read for 1.2 s
+
+    At 150 ms the firmware is still inside M5.begin() and the display init; its
+    loop() is not reading yet, so the PING went into the void. reset_input_buffer
+    then threw away any greeting that HAD arrived. And 1.2 s is shorter than a
+    CoreS3 cold boot, so even the HELLO usually missed the window. Worse, this
+    runs right after open_bus() has probed the same port looking for the servo
+    adapter -- so by the time we get here the board has already been reset once
+    and is mid-boot.
+
+    Now: no input flush, PING repeatedly, and wait long enough for a boot. Either
+    `HELLO` or `PONG` identifies the board, which is why the test is just the
+    substring `cores3` -- an unsolicited greeting is as good an answer as a
+    solicited one.
 
     Pass the servo port in `exclude` so it is never poked.
     """
@@ -52,17 +68,29 @@ def find_cores3(exclude=(), timeout=1.2, baud=115200, verbose=True):
     for port in cands:
         try:
             with serial.Serial(port, baud, timeout=0.2) as s:
-                time.sleep(0.15)
-                s.reset_input_buffer()
-                s.write(b"EVT PING\n")
-                t0, buf = time.time(), b""
+                # NO reset_input_buffer(): the greeting may already be in flight.
+                t0, buf, last_ping = time.time(), b"", 0.0
                 while time.time() - t0 < timeout:
+                    # Re-ask periodically. The first PING lands while the board is
+                    # still booting and is simply lost; a later one is answered.
+                    if time.time() - last_ping > 0.4:
+                        try:
+                            s.write(b"EVT PING\n")
+                        except Exception:
+                            pass
+                        last_ping = time.time()
                     buf += s.read(128)
                     if b"cores3" in buf.lower():
                         if verbose:
-                            print(f"[cores3] {port} answered PING")
+                            what = "greeted" if b"hello" in buf.lower() else "answered PING"
+                            print(f"[cores3] {port} {what}")
                         return port
-        except Exception:
+        except Exception as e:
+            # Say WHY. Swallowing this made three different failures -- port
+            # busy, permissions, wrong device -- all present as the single
+            # unhelpful "no CoreS3 found".
+            if verbose:
+                print(f"[cores3] {port} skipped: {type(e).__name__}: {e}")
             continue
 
     # Fallback for firmware without EVT PING: if exactly one candidate is left

@@ -386,6 +386,7 @@ class GroundingDinoDetector:
         self.model = AutoModelForZeroShotObjectDetection.from_pretrained(model).to(device)
         self.model.eval()
         self.vocab = _normalise_vocabulary(vocabulary)
+        self._text_form = None      # "batch" | "string", decided on first use
         if not self.vocab:
             raise ValueError("Grounding DINO vocabulary must contain at least one label")
         print(f"[detector] Grounding DINO ({model}) on {device}")
@@ -413,12 +414,47 @@ class GroundingDinoDetector:
             self.model = self.model.to("cpu")
             return self._detect(pil, (H, W), torch)
 
+    def _encode(self, pil, torch):
+        """Tokenise the vocabulary in whichever shape this Transformers wants.
+
+        Compatibility shim, same species as _postprocess_grounding_dino below.
+        Newer GroundingDinoProcessor takes a BATCH OF LABEL LISTS -- text=[[...]]
+        -- which preserves multi-word phrases like "cell phone" all the way into
+        the returned detections. Older ones take Grounding DINO's original wire
+        format: one dot-separated string, "person. laptop. cell phone.".
+
+        Handing the nested list to an older tokenizer raises
+
+            TypeError: TextEncodeInput must be Union[TextInputSequence, ...]
+
+        which says nothing about vocabularies, versions, or what to do. And
+        requirements.txt does not pin `transformers`, so which branch you get
+        depends on the day you ran pip. Try the structured form, fall back to the
+        string, and remember which one worked so this costs one exception per
+        process rather than one per frame.
+        """
+        if self._text_form != "string":
+            try:
+                out = self.proc(images=pil, text=[self.vocab],
+                                return_tensors="pt").to(self.device)
+                self._text_form = "batch"
+                return out
+            except (TypeError, ValueError) as exc:
+                if self._text_form == "batch":
+                    raise            # it worked before; this is a real failure
+                print(f"[detector] this transformers wants the flat prompt "
+                      f"({type(exc).__name__}); using 'a. b. c.' form")
+                self._text_form = "string"
+        prompt = ". ".join(self.vocab) + "."
+        return self.proc(images=pil, text=prompt,
+                         return_tensors="pt").to(self.device)
+
     def _detect(self, pil, image_hw, torch) -> List[Detection]:
         H, W = image_hw
         # Current Transformers accepts a batch of label lists. Keeping the
         # vocabulary structured preserves phrases such as "cell phone" and
         # "robot arm" all the way into the returned detections.
-        inputs = self.proc(images=pil, text=[self.vocab], return_tensors="pt").to(self.device)
+        inputs = self._encode(pil, torch)
         with torch.inference_mode():
             outputs = self.model(**inputs)
         result = _postprocess_grounding_dino(
