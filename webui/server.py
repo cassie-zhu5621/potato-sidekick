@@ -68,6 +68,7 @@ def build_status(statuses, entries, truth):
         ids = set(e["all"]) | set(e["any"]) | set(e["not"]) | set(e["then"])
         out.append({
             "label": s.label, "sat": bool(s.satisfied), "cool": bool(s.cooling),
+            "cooldown_remaining_s": round(float(s.cooldown_remaining_s), 1),
             "all": list(e["all"]), "any": list(e["any"]),
             "not": list(e["not"]), "then": list(e["then"]),
             "on": {str(r): bool(truth.get(r, False)) for r in ids},
@@ -295,11 +296,14 @@ async function poll(){
       (p.why?`<div class=why>why: ${p.why}</div>`:'')+
       (p.status||[]).map(s=>{
         const j=(p.judgments||{})[s.label];
-        const state = j&&j.status==='confirmed'?'<span class="estate confirmed">VLM confirmed</span>'
-                     :j&&j.status==='rejected'?'<span class="estate rejected">VLM rejected</span>'
-                     :j&&j.status==='judging'?'<span class="estate judging">VLM judging</span>'
-                     :s.sat?'<span class="estate sat">CV candidate</span>'
-                     :(s.cool?'<span class="estate cool">cooldown</span>':'<span class=estate>watching</span>');
+        const left=Math.max(0,Math.ceil(s.cooldown_remaining_s||0));
+        const state = j&&j.status==='judging'?'<span class="estate judging">VLM judging</span>'
+                     :j&&j.status==='candidate'?'<span class="estate sat">CV candidate</span>'
+                     :s.cool&&j&&j.status==='confirmed'?`<span class="estate confirmed">confirmed · cooldown ${left}s</span>`
+                     :s.cool&&j&&j.status==='rejected'?`<span class="estate rejected">rejected · cooldown ${left}s</span>`
+                     :s.cool?`<span class="estate cool">cooldown ${left}s</span>`
+                     :s.sat?'<span class="estate sat">held · release to rearm</span>'
+                     :'<span class=estate>watching</span>';
         return `<div class=entry>
           <div class=ehead><span class="dot ${s.sat?'sat':(s.cool?'cool':'')}"></span>
             ${state}<span class=ecap>${caption(s.label)}</span></div>

@@ -243,7 +243,7 @@ IMAGE view_5, camera_role=planning, pan=+60
       ],
       "within_s": 4.0,
       "persist_frames": 2,
-      "cooldown_s": 60
+      "cooldown_s": 15
     }
   ],
   "assumptions": [],

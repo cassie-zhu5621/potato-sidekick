@@ -317,7 +317,7 @@ def main():
                          "try 4 with YOLO-World)")
     ap.add_argument("--persist", type=int, default=2,
                     help="frames a relation must hold before it counts")
-    ap.add_argument("--cooldown", type=float, default=60.0,
+    ap.add_argument("--cooldown", type=float, default=15.0,
                     help="seconds before the same entry can fire again")
     ap.add_argument("--tau-gap", type=float, default=3.0,
                     help="THEN-gate: max seconds between ordered relations")

@@ -27,12 +27,13 @@ class EntryStatus:
     label: str
     satisfied: bool
     cooling: bool
+    cooldown_remaining_s: float
     detail: str          # human-readable progress, e.g. "held: 9 · waiting: 8"
 
 
 class WatchExecutor:
-    def __init__(self, spec: dict, persist: int = 2, cooldown: float = 60.0,
-                 default_within: float = 2.0, tau_gap: float = 3.0, then_cd_mult: float = 2.0):
+    def __init__(self, spec: dict, persist: int = 2, cooldown: float = 15.0,
+                 default_within: float = 2.0, tau_gap: float = 3.0, then_cd_mult: float = 1.0):
         self.persist, self.cooldown = persist, cooldown
         self.tau_gap = tau_gap            # THEN-gate: min onset gap to count as an ORDERED event
         self.then_cd_mult = then_cd_mult  # a true ordered 'then' gets a longer cooldown
@@ -94,7 +95,9 @@ class WatchExecutor:
                 fired.append(e)
                 cooling = True
             self._was_sat[i] = sat
-            statuses.append(EntryStatus(e["label"], sat, cooling, detail))
+            remaining = (max(0.0, self._fired_cd[i] - (t - self._fired_at[i]))
+                         if cooling else 0.0)
+            statuses.append(EntryStatus(e["label"], sat, cooling, remaining, detail))
         return fired, statuses
 
     # ------------------------------------------------------------------ #

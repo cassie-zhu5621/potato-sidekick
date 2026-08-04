@@ -49,6 +49,40 @@ def test_single_ok_does_not_duplicate_an_exact_watch_entry():
     assert [entry["label"] for entry in ex.entries] == ["holding cup"]
 
 
+def test_cooldown_counts_down_and_requires_a_new_edge_after_expiry():
+    ex = WatchExecutor(
+        {"watch": [{"all": [9], "label": "holding cup"}]},
+        persist=1, cooldown=15, default_within=2,
+    )
+    on = {i: i == 9 for i in range(1, 12)}
+    off = {i: False for i in range(1, 12)}
+
+    fired, status = ex.step(on, 0.0)
+    assert [entry["label"] for entry in fired] == ["holding cup"]
+    assert status[0].cooldown_remaining_s == 15.0
+
+    fired, status = ex.step(on, 5.0)
+    assert fired == []
+    assert status[0].cooldown_remaining_s == 10.0
+
+    # Break and re-form during cooldown. Holding through expiry must NOT fire
+    # automatically; the user explicitly chose fresh-edge semantics.
+    ex.step(off, 8.0)
+    ex.step(off, 11.0)       # beyond within_s: fully re-armed edge detector
+    fired, _ = ex.step(on, 12.0)
+    assert fired == []       # still cooling
+    fired, status = ex.step(on, 16.0)
+    assert fired == []
+    assert status[0].satisfied and not status[0].cooling
+
+    # Only another release and new onset after cooldown may fire again.
+    ex.step(off, 17.0)
+    ex.step(off, 20.0)
+    fired, status = ex.step(on, 21.0)
+    assert [entry["label"] for entry in fired] == ["holding cup"]
+    assert status[0].cooldown_remaining_s == 15.0
+
+
 def test_lean_focus_ignores_unrelated_gaze_hit():
     entry = {"all": [8], "on": "laptop"}
     viz = {
