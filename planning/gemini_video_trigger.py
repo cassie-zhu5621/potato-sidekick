@@ -60,11 +60,11 @@ RESULT_SCHEMA = {
         },
         "feedback": {
             "type": "string",
-            "description": "A brief Chinese message suitable for showing to the user.",
+            "description": "A brief English message suitable for showing to the user.",
         },
         "reason": {
             "type": "string",
-            "description": "A concise Chinese explanation grounded only in the video.",
+            "description": "A concise English explanation grounded only in the video.",
         },
     },
     "required": [
@@ -79,15 +79,16 @@ RESULT_SCHEMA = {
 
 
 def _prompt(trigger_condition: str) -> str:
-    return f"""你是一个严格的视频事件触发器。
+    return f"""You are a strict video-event trigger.
 
-用户设定的反馈触发条件：{trigger_condition}
+The user's feedback trigger condition is: {trigger_condition}
 
-请检查视频的视觉和音频内容：
-1. 只有视频中有清晰证据表明该条件实际发生时，feedback_trigger 才能为 true。
-2. 不要根据常识补全视频中没有出现的内容；不确定时返回 false。
-3. evidence_timestamps 使用 MM:SS；没有证据时返回空数组。
-4. feedback 和 reason 使用简短中文。feedback 是可以直接展示给用户的一句话。
+Inspect both the visual and audio content of the video:
+1. Set feedback_trigger to true only when the video clearly supports that the condition occurred.
+2. Do not infer details that are absent from the video; return false when uncertain.
+3. Format evidence_timestamps as MM:SS and return an empty array when there is no evidence.
+4. Write feedback and reason in concise English. Feedback must be one sentence that can be
+   shown directly to the user. All natural-language response fields must be in English.
 """
 
 

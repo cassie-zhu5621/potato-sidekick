@@ -18,7 +18,7 @@ def test_candidate_group_uses_one_call_for_all_cards_and_five_frames(monkeypatch
             ],
             "selected_index": 1,
             "note": "Both are visible; manipulation is more specific.",
-            "feedback": "我看到有人正在操作杯子。",
+            "feedback": "I can see someone handling the cup.",
         }, "{}")
 
     monkeypatch.delenv("SECONDATTN_OFFLINE", raising=False)

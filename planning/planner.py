@@ -187,6 +187,7 @@ Prefer common object names.
 
 CONTEXT: "{context}"
 
+Write every natural-language output field, including labels, why, and missing, in English.
 Return ONLY JSON, exactly this schema — use ONLY the fields shown, no additional fields,
 no markdown fences:
 {schema}"""

@@ -173,8 +173,9 @@ def _prompt(rel: str, taste: ReportabilityTaste, confirm: str = "", story: str =
     if confirm:
         lines.append("The supplied images are ordered temporal evidence from the same view.")
     js = '{"axes": {"people":0-1,"relevance":0-1,"consequence":0-1,"continuity":0-1}, '
-    js += ('"confirmed": true|false, "note": "<one field note, <=16 words>", '
-           '"feedback": "<one short Chinese sentence for the user>"}')
+    js += ('"confirmed": true|false, "note": "<one English field note, <=16 words>", '
+           '"feedback": "<one short English sentence for the user>"}')
+    lines.append("All natural-language response fields must be written in English.")
     lines.append(f"\nReturn ONLY JSON: {js}")
     return "\n".join(lines)
 
@@ -243,7 +244,9 @@ Return one result for every candidate using its exact index. If none are confirm
 selected_index must be -1. If one or more are confirmed, selected_index must identify
 exactly one confirmed card: prefer the most specific card and the one most relevant to
 the user's request; use the given order only as a tie-break. The application will send
-only this winner as one notification. Feedback must be one short Chinese sentence.
+only this winner as one notification. All natural-language response fields, including
+each reason, note, and feedback, must be written in English. Feedback must be one short
+English sentence addressed to the user.
 Return only the requested JSON."""
 
 
@@ -278,7 +281,7 @@ def judge_candidate_group(jpeg: Optional[bytes | Sequence[bytes]], entries: Sequ
                 for item in candidate_specs]
         selected = 0
         note = f"[offline] {candidate_specs[0]['claim'][:64]}"
-        feedback = f"我注意到：{candidate_specs[0]['claim'][:48]}"
+        feedback = f"I noticed: {candidate_specs[0]['claim'][:48]}"
     else:
         try:
             raw, _ = call_json(
@@ -335,7 +338,7 @@ def judge(jpeg: Optional[bytes | Sequence[bytes]], graph, taste: ReportabilityTa
         out = _offline(seed_image, story or rel, taste)
         if story:
             out["note"] = f"[offline] {story[:64]}"
-        out["feedback"] = f"我注意到：{(confirm or story or rel or '一个事件')[:48]}"
+        out["feedback"] = f"I noticed: {(confirm or story or rel or 'an event')[:48]}"
         out["confirmed"] = True
     else:
         try:
