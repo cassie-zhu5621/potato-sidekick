@@ -20,7 +20,7 @@ runs end-to-end with no API key — for wiring tests and for you to plug your ri
 """
 
 from __future__ import annotations
-import os, re, hashlib
+import json, os, re, hashlib
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence
 
@@ -195,6 +195,131 @@ JUDGE_SCHEMA = {
     "required": ["axes", "confirmed", "note", "feedback"],
     "additionalProperties": False,
 }
+
+
+GROUP_JUDGE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "axes": JUDGE_SCHEMA["properties"]["axes"],
+        "candidates": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "index": {"type": "integer"},
+                    "confirmed": {"type": "boolean"},
+                    "reason": {"type": "string"},
+                },
+                "required": ["index", "confirmed", "reason"],
+                "additionalProperties": False,
+            },
+        },
+        "selected_index": {"type": "integer"},
+        "note": {"type": "string"},
+        "feedback": {"type": "string"},
+    },
+    "required": ["axes", "candidates", "selected_index", "note", "feedback"],
+    "additionalProperties": False,
+}
+
+
+def _group_prompt(candidates: list[dict], taste: ReportabilityTaste) -> str:
+    axes = "\n".join(f"  - {name}: {rubric}" for name, (rubric, _) in AXES.items())
+    about = (f'\nThe person especially cares about: "{taste.about.strip()}".'
+             if taste.about.strip() else "")
+    return f"""You are the noticing companion's visual judgment brain.
+The five supplied images are temporal evidence from the same camera at
+t-1.0s, t-0.5s, onset, t+0.5s, and t+1.0s.
+
+CV proposed ALL of the following candidate cards at that same onset:
+{json.dumps(candidates, ensure_ascii=False, indent=2)}
+
+Evaluate every candidate independently against the images. Cheap 2D geometry can be
+wrong because of depth, so confirm only what the images support. Do not ignore a card
+just because another card is confirmed. Score the shared moment on these axes (0-1):
+{axes}{about}
+
+Return one result for every candidate using its exact index. If none are confirmed,
+selected_index must be -1. If one or more are confirmed, selected_index must identify
+exactly one confirmed card: prefer the most specific card and the one most relevant to
+the user's request; use the given order only as a tie-break. The application will send
+only this winner as one notification. Feedback must be one short Chinese sentence.
+Return only the requested JSON."""
+
+
+def judge_candidate_group(jpeg: Optional[bytes | Sequence[bytes]], entries: Sequence[dict],
+                          taste: ReportabilityTaste, model: str = MODEL) -> dict:
+    """Evaluate coincident cards in one Gemini call and select at most one winner."""
+    images = ([jpeg] if isinstance(jpeg, (bytes, bytearray)) else list(jpeg or []))
+    candidate_specs = []
+    for index, entry in enumerate(entries):
+        candidate_specs.append({
+            "index": index,
+            "label": str(entry.get("label") or f"candidate {index}"),
+            "claim": confirmation_claim(entry),
+            "all": list(entry.get("all") or []),
+            "any": list(entry.get("any") or []),
+            "not": list(entry.get("not") or []),
+            "then": list(entry.get("then") or []),
+            "on": entry.get("on"),
+        })
+
+    if not candidate_specs:
+        return {"worth": 0.0, "why": "", "note": "No candidate cards.",
+                "feedback": "", "axes": {a: 0.0 for a in AXES},
+                "confirmed": False, "selected_index": -1,
+                "candidate_results": []}
+
+    if os.environ.get("SECONDATTN_OFFLINE") == "1" or not images:
+        axes = _offline(images[0] if images else None,
+                        candidate_specs[0]["claim"], taste)["axes"]
+        rows = [{"index": item["index"], "confirmed": True,
+                 "reason": "offline deterministic confirmation"}
+                for item in candidate_specs]
+        selected = 0
+        note = f"[offline] {candidate_specs[0]['claim'][:64]}"
+        feedback = f"我注意到：{candidate_specs[0]['claim'][:48]}"
+    else:
+        try:
+            raw, _ = call_json(
+                _group_prompt(candidate_specs, taste), GROUP_JUDGE_SCHEMA,
+                images=images,
+                labels=["t-1.0s", "t-0.5s", "t0_onset", "t+0.5s", "t+1.0s"]
+                       if len(images) == 5 else [f"panel_{i}" for i in range(len(images))],
+                model=model, max_output_tokens=768,
+            )
+            axes = {a: float(raw.get("axes", {}).get(a, 0.0)) for a in AXES}
+            by_index = {}
+            for row in raw.get("candidates", []):
+                index = int(row.get("index", -1))
+                if 0 <= index < len(candidate_specs) and index not in by_index:
+                    by_index[index] = {
+                        "index": index,
+                        "confirmed": bool(row.get("confirmed", False)),
+                        "reason": str(row.get("reason", ""))[:160],
+                    }
+            rows = [by_index.get(i, {"index": i, "confirmed": False,
+                                     "reason": "Gemini returned no result for this card"})
+                    for i in range(len(candidate_specs))]
+            selected = int(raw.get("selected_index", -1))
+            if not (0 <= selected < len(rows) and rows[selected]["confirmed"]):
+                selected = -1
+            note = str(raw.get("note", ""))[:160]
+            feedback = str(raw.get("feedback", ""))[:160]
+        except Exception as exc:
+            axes = {a: 0.0 for a in AXES}
+            rows = [{"index": item["index"], "confirmed": False,
+                     "reason": f"Gemini error: {str(exc)[:80]}"}
+                    for item in candidate_specs]
+            selected = -1
+            note = f"Gemini error: {str(exc)[:80]}"
+            feedback = ""
+
+    confirmed = selected >= 0
+    worth = taste.compose(axes) if confirmed else 0.0
+    return {"worth": worth, "why": taste.why(axes), "note": note,
+            "feedback": feedback, "axes": axes, "confirmed": confirmed,
+            "selected_index": selected, "candidate_results": rows}
 
 
 def judge(jpeg: Optional[bytes | Sequence[bytes]], graph, taste: ReportabilityTaste,

@@ -107,6 +107,7 @@ PAGE = """<!doctype html><html><head><meta charset=utf-8><title>attention system
  .estate.sat{color:#D95B5B}.estate.cool{color:#E89D9D}
  .estate.judging{color:#88E4EA}.estate.confirmed{color:#A1CC48}
  .estate.rejected{color:#E89D9D}
+ .estate.grouped{color:#D9E157}.estate.suppressed{color:#7a7a70}
  .ecap{color:#7a7a70;font-size:17px}
  /* the lit-up logic line — operators are the stars, bigger than relations */
  .logic{display:flex;flex-wrap:wrap;gap:9px;align-items:center}
@@ -299,6 +300,8 @@ async function poll(){
         const left=Math.max(0,Math.ceil(s.cooldown_remaining_s||0));
         const state = j&&j.status==='judging'?'<span class="estate judging">VLM judging</span>'
                      :j&&j.status==='candidate'?'<span class="estate sat">CV candidate</span>'
+                     :s.cool&&j&&j.status==='grouped'?`<span class="estate grouped">confirmed · grouped · cooldown ${left}s</span>`
+                     :s.cool&&j&&j.status==='suppressed'?`<span class="estate suppressed">suppressed · cooldown ${left}s</span>`
                      :s.cool&&j&&j.status==='confirmed'?`<span class="estate confirmed">confirmed · cooldown ${left}s</span>`
                      :s.cool&&j&&j.status==='rejected'?`<span class="estate rejected">rejected · cooldown ${left}s</span>`
                      :s.cool?`<span class="estate cool">cooldown ${left}s</span>`

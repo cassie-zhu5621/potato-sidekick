@@ -48,6 +48,7 @@ from robot import states as ST
 from robot.pose import UNITS_PER_DEG, resolve 
 from session.session_flow import SessionFlow, transcript_usable 
 from planning.event_frames import select_temporal_frames
+from perception.watch_exec import order_coincident_candidates
 
 # The five S4 stations, as keyboard stand-ins for the web UI's pan buttons. Used
 # in S6 to re-aim: the tap said "wrong direction", not "wrong task", so only the
@@ -601,6 +602,8 @@ def main():
             if UI is not None:
                 with UI.LOCK:
                     UI.STATE["judgments"] = {}
+            candidate_gate["busy"] = False
+            candidate_gate["winner"] = None
             sweep.begin()
         elif kind == "pan":
             # Set the aim and stop. Do NOT also announce "arrived:S5_TRACK" here:
@@ -627,6 +630,8 @@ def main():
             if UI is not None:
                 with UI.LOCK:
                     UI.STATE["judgments"] = {}
+            candidate_gate["busy"] = False
+            candidate_gate["winner"] = None
             print("[flow] watching stopped -- plan cleared")
         elif kind == "pan_next":
             deg, sc = next_best_pan(player.snapshot()["pose_deg"]["pan"])
@@ -781,6 +786,7 @@ def main():
     event_frames = cam.event_frames if cam is not None else deque(maxlen=40)
     event_candidates = []                 # wait through t+1.0 before Gemini confirm
     confirmed_findings = []               # worker -> main-loop handoff
+    candidate_gate = {"busy": False, "winner": None}
     from planning.sweep_plan import Sweep
     sweep = Sweep(feed_dir=a.feed_dir)
     os.makedirs(a.feed_dir, exist_ok=True)
@@ -801,28 +807,57 @@ def main():
                 "status": status, "note": str(note or ""), "time": time.time(),
             }
 
-    def confirm_candidate(candidate):
-        from planning.judge import ReportabilityTaste, confirmation_claim, judge
+    def confirm_candidate_group(candidate):
+        """Send every coincident card in one Gemini request; emit one winner."""
+        from planning.judge import (ReportabilityTaste, confirmation_claim,
+                                    judge_candidate_group)
         taste = story.taste if story is not None else ReportabilityTaste()
-        entry = candidate["entry"]
-        claim = confirmation_claim(entry)
-        publish_judgment(entry, "judging", "Checking five event frames with Gemini…",
-                         candidate["generation"])
+        entries = candidate["entries"]
+        if candidate["generation"] != ctxd.get("plan_generation"):
+            candidate_gate["busy"] = False
+            return
+        claims = [confirmation_claim(entry) for entry in entries]
+        for entry in entries:
+            publish_judgment(entry, "judging",
+                             f"Checking {len(entries)} same-moment card(s) in one Gemini call…",
+                             candidate["generation"])
         started = time.monotonic()
-        result = judge(candidate["images"], None, taste, confirm=claim)
-        audit_write("judge", {
-            "claim": claim, "entry": entry,
+        result = judge_candidate_group(candidate["images"], entries, taste)
+        elapsed = time.monotonic() - started
+        audit_write("judge_group", {
+            "claims": claims, "entries": entries, "group_size": len(entries),
             "onset": candidate["onset"],
             "generation": candidate["generation"],
-            "latency_s": round(time.monotonic() - started, 3),
+            "latency_s": round(elapsed, 3),
             "result": result,
         }, candidate["images"])
-        print(f"[timing] Gemini judge: {time.monotonic() - started:.2f}s")
-        publish_judgment(
-            entry, "confirmed" if result.get("confirmed") else "rejected",
-            result.get("note") or result.get("feedback") or "",
-            candidate["generation"],
-        )
+        print(f"[timing] Gemini group judge ({len(entries)} cards, one call): {elapsed:.2f}s")
+
+        selected = result.get("selected_index", -1)
+        rows = {row.get("index"): row for row in result.get("candidate_results", [])}
+        winner = (entries[selected] if isinstance(selected, int)
+                  and 0 <= selected < len(entries) else None)
+        winner_label = winner.get("label") if winner else None
+        for index, entry in enumerate(entries):
+            row = rows.get(index, {})
+            reason = row.get("reason") or result.get("note") or ""
+            if index == selected and winner is not None:
+                publish_judgment(entry, "confirmed", reason, candidate["generation"])
+            elif row.get("confirmed") and winner is not None:
+                publish_judgment(
+                    entry, "grouped",
+                    f"Also confirmed in this moment; one notification uses {winner_label}. {reason}",
+                    candidate["generation"],
+                )
+            else:
+                publish_judgment(entry, "rejected", reason, candidate["generation"])
+
+        if winner is None:
+            candidate_gate["busy"] = False
+            print(f"[confirm] group rejected: {result.get('note', '')}")
+            return
+        candidate["entry"] = winner
+        candidate_gate["winner"] = winner_label
         confirmed_findings.append((candidate, result))
 
     try:
@@ -883,6 +918,10 @@ def main():
                                      args=(ctxd.get("request", ""),
                                            ctxd.get("plan_generation", 0)),
                                      daemon=True).start()
+                if (snap["state"] == "S5B_TRACK"
+                        and last_state in ("S7a", "S7b")):
+                    candidate_gate["busy"] = False
+                    candidate_gate["winner"] = None
                 last_state = snap["state"]
 
             # The recording bar is the only live confirmation a participant gets
@@ -899,6 +938,8 @@ def main():
                 candidate, decision = confirmed_findings.pop(0)
                 if candidate["generation"] != ctxd.get("plan_generation"):
                     print("[confirm] stale candidate discarded")
+                    candidate_gate["busy"] = False
+                    candidate_gate["winner"] = None
                     continue
                 if not decision.get("confirmed"):
                     print(f"[confirm] rejected: {decision.get('note', '')}")
@@ -909,6 +950,8 @@ def main():
                     ctxd["entry"] = candidate["entry"]
                     ctxd["frame"] = candidate["frame"]
                     ui_events.append("finding")
+                else:
+                    candidate_gate["busy"] = False
             while pending:
                 line = pending.pop(0)
                 if "PTT_DOWN" in line:      events.append("ptt_down")
@@ -979,19 +1022,36 @@ def main():
 
             # CV only proposes a candidate. Gemini sees ordered raw frames before
             # anything is reported or allowed to enter the S7 feedback motion.
-            for e in fired:
-                print(f"[watch] candidate: {e.get('label')}")
-                publish_judgment(e, "candidate", "CV gate passed; collecting five frames.",
-                                 ctxd.get("plan_generation", 0))
-                event_candidates.append({
-                    "entry": dict(e), "onset": now, "due": now + 1.0,
-                    "generation": ctxd.get("plan_generation"),
-                    "frame": frame.copy() if frame is not None else None,
-                })
+            if fired:
+                entries = [dict(e) for e in order_coincident_candidates(fired)]
+                if candidate_gate["busy"]:
+                    for entry in entries:
+                        publish_judgment(
+                            entry, "suppressed",
+                            "A previous event group is still being judged or reported.",
+                            ctxd.get("plan_generation", 0),
+                        )
+                    print(f"[watch] suppressed later group of {len(entries)} card(s): gate busy")
+                else:
+                    candidate_gate["busy"] = True
+                    labels = [entry.get("label") for entry in entries]
+                    print(f"[watch] same-moment candidate group: {labels}")
+                    for entry in entries:
+                        publish_judgment(
+                            entry, "candidate",
+                            f"CV gate passed with {len(entries)} same-moment card(s); collecting five frames.",
+                            ctxd.get("plan_generation", 0),
+                        )
+                    event_candidates.append({
+                        "entries": entries, "onset": now, "due": now + 1.0,
+                        "generation": ctxd.get("plan_generation"),
+                        "frame": frame.copy() if frame is not None else None,
+                    })
 
             for candidate in list(event_candidates):
                 if candidate["generation"] != ctxd.get("plan_generation"):
                     event_candidates.remove(candidate)
+                    candidate_gate["busy"] = False
                     print("[confirm] cancelled stale candidate before API call")
                     continue
                 if now < candidate["due"]:
@@ -1000,11 +1060,13 @@ def main():
                 candidate["images"] = event_jpegs(candidate["onset"])
                 if len(candidate["images"]) != 5:
                     print("[confirm] skipped: five event frames unavailable")
-                    publish_judgment(candidate["entry"], "rejected",
-                                     "Five event frames were unavailable.",
-                                     candidate["generation"])
+                    for entry in candidate["entries"]:
+                        publish_judgment(entry, "rejected",
+                                         "Five event frames were unavailable.",
+                                         candidate["generation"])
+                    candidate_gate["busy"] = False
                     continue
-                threading.Thread(target=confirm_candidate, args=(candidate,),
+                threading.Thread(target=confirm_candidate_group, args=(candidate,),
                                  daemon=True).start()
 
             # Open bursts advance whenever there is a frame and an open burst --

@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from perception.watch_exec import WatchExecutor
+from perception.watch_exec import WatchExecutor, order_coincident_candidates
 from planning.spec_utils import _focus_ok
 
 
@@ -81,6 +81,15 @@ def test_cooldown_counts_down_and_requires_a_new_edge_after_expiry():
     fired, status = ex.step(on, 21.0)
     assert [entry["label"] for entry in fired] == ["holding cup"]
     assert status[0].cooldown_remaining_s == 15.0
+
+
+def test_coincident_candidates_prefer_specificity_then_planner_order():
+    gaze = {"all": [1], "label": "gaze"}
+    hands = {"all": [9], "label": "hands"}
+    combo = {"all": [1, 9], "label": "gaze while holding"}
+    sequence = {"then": [7, 9], "label": "approach then hold"}
+    assert order_coincident_candidates([gaze, hands]) == [gaze, hands]
+    assert order_coincident_candidates([gaze, combo, sequence]) == [sequence, combo, gaze]
 
 
 def test_lean_focus_ignores_unrelated_gaze_hit():

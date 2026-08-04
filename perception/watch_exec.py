@@ -22,6 +22,23 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 
+def order_coincident_candidates(entries):
+    """One moment, one deterministically ordered Judge batch.
+
+    Prefer the more specific composed rule; ties preserve Planner order, which
+    is already defined as most-important-first. This keeps arbitration
+    deterministic while all entries still share one VLM call.
+    """
+    def specificity(entry):
+        ids = (set(entry.get("all", [])) | set(entry.get("any", []))
+               | set(entry.get("then", [])) | set(entry.get("not", [])))
+        return (1 if entry.get("then") else 0, len(ids))
+
+    return [entry for _, entry in sorted(
+        enumerate(entries), key=lambda pair: (-specificity(pair[1])[0],
+                                               -specificity(pair[1])[1], pair[0]))]
+
+
 @dataclass
 class EntryStatus:
     label: str
