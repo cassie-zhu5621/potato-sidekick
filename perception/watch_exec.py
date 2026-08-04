@@ -45,7 +45,17 @@ class WatchExecutor:
                 "within": float(c.get("within_s", default_within)),
                 "label": c.get("label", "watch"),
             })
+        # Gemini occasionally emits both watch:[{all:[9]}] and single_ok:[9].
+        # They are the same trigger, and running both launches two Judge calls
+        # with contradictory labels. Keep single_ok only when it adds a genuinely
+        # new alternative.
+        exact_singletons = {
+            e["all"][0] for e in self.entries
+            if len(e["all"]) == 1 and not e["any"] and not e["not"] and not e["then"]
+        }
         for rid in spec.get("single_ok", []) or []:
+            if rid in exact_singletons:
+                continue
             self.entries.append({"all": [rid], "any": [], "not": [], "then": [], "on": None,
                                  "within": default_within, "label": f"single:{rid}"})
         # per-relation timing state

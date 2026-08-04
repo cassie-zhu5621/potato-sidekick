@@ -99,7 +99,7 @@ python3 planning/gemini_video_trigger.py path/to/video.mp4 \
   "当有人挥手时触发反馈"
 ```
 
-The default is the low-latency profile: `gemini-3.5-flash-lite`, minimal
+The default model is `gemini-3.5-flash`, with minimal
 thinking, low media resolution, a 256-token output cap, and priority service
 tier. Every value can be overridden through `.env` or CLI flags. The command
 prints structured JSON containing `feedback_trigger`, confidence,

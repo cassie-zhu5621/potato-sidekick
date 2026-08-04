@@ -42,6 +42,7 @@ venv/
 
 # --- arduino / os / editor ------------------------------------------------
 build/
+.pio/
 *.bin
 .DS_Store
 .idea/

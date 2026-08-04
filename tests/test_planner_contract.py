@@ -1,4 +1,5 @@
 from planning.planner import output_schema, validate
+from planning.judge import confirmation_claim
 
 
 def _spec():
@@ -22,3 +23,13 @@ def test_out_of_range_box_is_rejected():
     spec = _spec()
     spec["boxes"][0]["box"][3] = 56.0
     assert any("numbers in [0,1]" in error for error in validate(spec))
+
+
+def test_judge_claim_does_not_turn_holding_a_cup_into_cup_on_cup():
+    entry = {"all": [9], "on": "cup", "label": "holding cup"}
+    assert confirmation_claim(entry) == "holding cup"
+
+
+def test_judge_claim_scopes_an_unnamed_target_without_spatial_wordplay():
+    entry = {"all": [9], "on": "laptop", "label": "active manipulation"}
+    assert confirmation_claim(entry) == "active manipulation involving laptop"

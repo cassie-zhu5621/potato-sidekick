@@ -248,6 +248,14 @@ class SessionFlow:
                 self._ui("tracking")
             return self.out
 
+        if ev == "plan_failed":
+            # S4's motion may already have arrived at its S5 hold by the time a
+            # remote error comes back. Never leave the participant looking at a
+            # permanent "planning..." screen: make the failure explicit.
+            self.plan_pending = False
+            self._go("S8_ERROR", f"planner failed: {arg}")
+            return self.out
+
         if ev == "arrived":
             # the player finished a one-shot and its `then` moved it on
             if arg in ST.STATES:

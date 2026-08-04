@@ -28,6 +28,36 @@ from planning.gemini_provider import call_json, model_name
 
 MODEL = model_name(os.environ.get("NOTICEBOT_GEMINI_JUDGE_MODEL"))
 
+_RELATION_CLAIMS = {
+    1: "gazing at", 2: "joint attention", 3: "eye contact", 4: "pointing at",
+    5: "close proximity", 6: "F-formation", 7: "approaching or departing",
+    8: "leaning toward", 9: "hands on or manipulating", 10: "gathering",
+    11: "turn-taking with",
+}
+
+
+def confirmation_claim(entry: dict) -> str:
+    """Turn a watch entry into an unambiguous claim for the VLM Judge.
+
+    Appending ``on cup`` to a planner label such as ``holding cup`` produced
+    ``holding cup on cup``, which Gemini reasonably interpreted as cup stacking.
+    Use the authored label when it already names the target; otherwise say
+    ``involving`` rather than composing an accidental spatial relation.
+    """
+    label = str(entry.get("label") or "").strip()
+    if label.startswith("single:"):
+        try:
+            label = _RELATION_CLAIMS.get(int(label.split(":", 1)[1]), label)
+        except ValueError:
+            pass
+    if not label:
+        ids = list(entry.get("all") or entry.get("any") or entry.get("then") or [])
+        label = _RELATION_CLAIMS.get(ids[0], "requested event") if ids else "requested event"
+    on = entry.get("on")
+    if on and str(on).lower() not in label.lower():
+        label += f" involving {on}"
+    return label
+
 
 # --------------------------------------------------------------------------- #
 # the compilable reportability taste

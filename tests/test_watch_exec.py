@@ -41,6 +41,14 @@ def test_hands_on_focus_uses_the_actual_target_label():
     assert _focus_ok(entry, viz, {"laptop"})
 
 
+def test_single_ok_does_not_duplicate_an_exact_watch_entry():
+    ex = WatchExecutor({
+        "watch": [{"all": [9], "on": "cup", "label": "holding cup"}],
+        "single_ok": [9],
+    })
+    assert [entry["label"] for entry in ex.entries] == ["holding cup"]
+
+
 def test_lean_focus_ignores_unrelated_gaze_hit():
     entry = {"all": [8], "on": "laptop"}
     viz = {

@@ -92,7 +92,7 @@ static const int SCREEN_W = 320, SCREEN_H = 240;
   uint32_t aExtAt = 0;
   const uint32_t A_EXT_TIMEOUT = 500;
 
-  void antennaInit() {}
+  void antennaInit() { leds.init(); }
   void setAntennaHue(int r, int g, int b) { aR = r; aG = g; aB = b; }
   void setAntennaLevel(int v) { aExt = constrain(v, 0, 255); aExtAt = millis(); }
   // The fallback breath must BE S1_IDLE's envelope, not a second, louder one.

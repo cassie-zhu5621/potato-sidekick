@@ -154,6 +154,8 @@ relations:
 
 {compose}
 Entries in "watch" are ALTERNATIVES (OR): a moment is recorded when any one entry fires.
+Never repeat an exact one-relation watch entry in "single_ok"; that would create two
+identical candidates and two unnecessary Judge calls for the same moment.
 Choose AT MOST 3 entries, ranked most important first. Conjunctions are rarer and more
 meaningful than single relations — prefer them when the context genuinely pairs signals,
 but a single relation is the right answer when it alone carries the news.
@@ -321,6 +323,7 @@ def plan(context: str, jpeg: Optional[bytes | Sequence[bytes]] = None, model: st
                 "raw": json.dumps(spec), "grammar": grammar}
     images = ([jpeg] if isinstance(jpeg, (bytes, bytearray))
               else list(jpeg or []))
+    text = ""
     try:
         spec, text = call_json(
             build_prompt(context, grammar), output_schema(grammar), images=images,

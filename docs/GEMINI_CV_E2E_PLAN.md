@@ -61,7 +61,7 @@ GEMINI_API_KEY=replace_with_your_real_key
 
 # 不把模型名写死在业务代码里。低延迟 smoke test 使用 Flash-Lite；
 # 若账户可用模型不同，只改这里。
-NOTICEBOT_GEMINI_MODEL=gemini-3.5-flash-lite
+NOTICEBOT_GEMINI_MODEL=gemini-3.5-flash
 NOTICEBOT_GEMINI_THINKING_LEVEL=minimal
 NOTICEBOT_GEMINI_MEDIA_RESOLUTION=low
 NOTICEBOT_GEMINI_MAX_OUTPUT_TOKENS=256

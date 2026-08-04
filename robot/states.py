@@ -106,10 +106,9 @@ STATES = {
         # field held the prose "S5A_SETTLE if the target changed, else
         # S5B_TRACK", which made validate() fail and ClipPlayer refuse to
         # construct at all. The conditional now lives where the information is:
-        # the planner knows whether the target changed, so it calls
-        # player.arm_next("S5A_SETTLE") and the arm is consumed here. Unarmed,
-        # S4 falls through to S5B and the re-crane is an ordinary transition --
-        # which is exactly the semantics the prose described.
+        # the planner knows whether the target changed. Planning runs after this
+        # clip has reached its S5 hold, so a changed result explicitly requests
+        # S5A; an unchanged result keeps S5B and only restores its runtime pan.
         clip="S4_PLAN", loop=False, then="S5B_TRACK", hue="cool",
         sfx=None, sfx_at=0.0, sfx_flash="shutter", sfx_loop=False,
         screen="planning", enter="auto", exit="auto -- NO human confirm; S6 is the correction path",

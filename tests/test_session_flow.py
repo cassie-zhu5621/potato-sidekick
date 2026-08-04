@@ -52,6 +52,15 @@ expect(f.state == "S7a" and f.noticed == 1, "finding -> S7a, count 1")
 f.feed("arrived:S7b"); f.feed("ok")
 expect(f.state == "S5B_TRACK", "OK -> back to watching")
 
+print("\n--- planner failure is visible ---")
+f = flow()
+run(f, ["ptt_down", "ptt_up", "transcript:find the blue mug",
+        "arrived:S4_PLAN", "arrived:S5B_TRACK"], "")
+expect(f.screen == "planning", "waits visibly while the planner is in flight")
+f.feed("plan_failed:503 unavailable")
+expect(f.state == "S8_ERROR" and not f.plan_pending,
+       "planner failure exits planning and enters S8_ERROR")
+
 print("\n--- the waiting screen ---")
 f = flow()
 out = run(f, ["ptt_down"], "")

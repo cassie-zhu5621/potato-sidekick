@@ -220,14 +220,9 @@ class ClipPlayer:
     def arm_next(self, state):
         """Override the NEXT `then`, once. Consumed when a one-shot finishes.
 
-        S4 is the only caller: it always ends up watching, but whether the crane
-        onto the target is an AUTHORED BEAT (S5a) or a bare transition (S5b)
-        depends on something only the planner knows -- did the chosen target
-        actually change. The sweep is additive and usually it did not.
-
-        This cannot be `request()`: that interrupts the running clip, and calling
-        it during S4 would cut the sweep off mid-turn. Arming stores the choice
-        and the clip finishes first -- the same shape as arm_pan_deg().
+        Kept for motion tooling that decides a branch before a one-shot ends.
+        The E2E planner must not use this: its result arrives after S4 has already
+        ended, so such an override would incorrectly steer the next one-shot.
         """
         if state not in ST.STATES:
             raise KeyError(state)

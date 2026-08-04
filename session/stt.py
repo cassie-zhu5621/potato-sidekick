@@ -129,8 +129,11 @@ class STT:
     """Ties them together. `on_transcript(text, source)` is called from a worker
     thread; the loop should treat it as an event, not do work in it."""
 
-    def __init__(self, on_transcript, enabled=True):
+    def __init__(self, on_transcript, enabled=True, record_dir=None):
         self.on_transcript = on_transcript
+        self.record_dir = record_dir
+        if self.record_dir:
+            os.makedirs(self.record_dir, exist_ok=True)
         self.rec = Recorder()
         self.whisper = Whisper() if enabled else None
         self.last = None            # (text, ok, why, source) for the web UI
@@ -168,7 +171,11 @@ class STT:
         callback. If anything is missing -- no mic, no whisper, no speech -- it
         reports an empty transcript rather than nothing at all, so the state
         machine's own timeout is not the thing that has to notice."""
-        wav = self.rec.stop()
+        wav_path = None
+        if self.record_dir:
+            stamp = time.strftime("%Y%m%d_%H%M%S_") + f"{time.time_ns() % 1_000_000_000:09d}"
+            wav_path = os.path.join(self.record_dir, f"ptt_{stamp}.wav")
+        wav = self.rec.stop(wav_path or "/tmp/noticebot_ptt.wav")
         self.busy = True            # the flow must not time out while this runs
 
         def work():

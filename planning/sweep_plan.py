@@ -138,12 +138,14 @@ class Sweep:
         for i, (pan, fr) in enumerate(grabbed):
             vis = _draw(fr.copy(), per[i])
             fn = f"pan_{int(round(pan)):+04d}.jpg"
+            raw_fn = f"raw_pan_{int(round(pan)):+04d}.jpg"
+            cv2.imwrite(os.path.join(out, raw_fn), fr)
             cv2.imwrite(os.path.join(out, fn), vis)
             sc = sum(3 if tier == "focus" else 1 for _, tier, _ in per[i])
             if sc > best[0]:
                 best = (sc, pan)
             print(f"[sweep] pan {pan:+.0f}deg: {len(per[i])} VLM boxes (score {sc})")
-            shots.append({"pan": int(round(pan)), "file": fn,
+            shots.append({"pan": int(round(pan)), "file": fn, "raw_file": raw_fn,
                           "dets": [{"label": l, "tier": tr,
                                     "box": [round(v, 1) for v in bx]}
                                    for l, tr, bx in per[i]]})

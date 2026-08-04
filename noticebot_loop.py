@@ -33,7 +33,7 @@ Run:
   python3 noticebot_loop.py --cam 0 --no-view          # headless
 """
 from __future__ import annotations
-import argparse, os, sys, threading, time
+import argparse, json, os, sys, threading, time
 from collections import deque
 
 import cv2
@@ -293,14 +293,10 @@ def main():
                     help="reuse attention_ui.py's web UI: live stream + panel + "
                          "the context box, viewable from another machine")
     ap.add_argument("--web-port", type=int, default=8000)
-    ap.add_argument("--feed-dir",
-                    default=os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                         "session_feed"),
-                    help="where findings and sweeps are written, and where the "
-                         "web UI reads them from. Absolute by default and next "
-                         "to this file, not relative to the shell's cwd -- a feed "
-                         "that lands in a different folder each time you launch "
-                         "from somewhere else is a session you cannot find later.")
+    ap.add_argument("--feed-dir", default=None,
+                    help="directory for this run's frames, sweeps, and LLM audit. "
+                         "By default a new session_feed/e2e_<timestamp> directory "
+                         "is created for every process start.")
     ap.add_argument("--list-cams", action="store_true")
     ap.add_argument("--no-stt", action="store_true",
                     help="skip Whisper; the web UI text box is then the only "
@@ -342,6 +338,53 @@ def main():
                     help="confirmed-event output; console is the safe default and "
                          "does not enter S7 or fire CoreS3 feedback")
     a = ap.parse_args()
+
+    # One feed directory is one auditable run.  Sweeps and stories already live
+    # here; keep the model inputs/outputs beside them so an E2E result can be
+    # reproduced without reconstructing evidence from terminal scrollback.
+    if a.feed_dir is None:
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        a.feed_dir = os.path.join(ROOT, "session_feed", f"e2e_{stamp}")
+        suffix = 1
+        base = a.feed_dir
+        while os.path.exists(a.feed_dir):
+            a.feed_dir = f"{base}_{suffix:02d}"
+            suffix += 1
+    a.feed_dir = os.path.abspath(a.feed_dir)
+    os.makedirs(a.feed_dir, exist_ok=True)
+    audit_dir = os.path.join(a.feed_dir, "llm")
+    os.makedirs(audit_dir, exist_ok=True)
+    audit_lock = threading.Lock()
+    with open(os.path.join(a.feed_dir, "run.json"), "w") as fh:
+        json.dump({
+            "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "argv": sys.argv,
+            "feed_dir": a.feed_dir,
+            "gemini": {
+                "model": os.environ.get(
+                    "NOTICEBOT_GEMINI_MODEL", "gemini-3.5-flash"),
+                "thinking_level": os.environ.get(
+                    "NOTICEBOT_GEMINI_THINKING_LEVEL", "minimal"),
+                "media_resolution": os.environ.get(
+                    "NOTICEBOT_GEMINI_MEDIA_RESOLUTION", "low"),
+                "service_tier": os.environ.get(
+                    "NOTICEBOT_GEMINI_SERVICE_TIER", "priority"),
+            },
+        }, fh, ensure_ascii=False, indent=2)
+    print(f"[run] artifacts -> {a.feed_dir}")
+
+    def audit_write(kind, payload, images=()):
+        stamp = time.strftime("%Y%m%d_%H%M%S_") + f"{time.time_ns() % 1_000_000_000:09d}"
+        out = os.path.join(audit_dir, f"{kind}_{stamp}")
+        with audit_lock:
+            os.makedirs(out, exist_ok=False)
+            for i, jpeg in enumerate(images):
+                with open(os.path.join(out, f"frame_{i}.jpg"), "wb") as fh:
+                    fh.write(jpeg)
+            with open(os.path.join(out, "result.json"), "w") as fh:
+                json.dump(payload, fh, ensure_ascii=False, indent=2, default=str)
+        print(f"[audit] {kind} -> {out}")
+        return out
 
     if a.cv_hz <= 0:
         ap.error("--cv-hz must be greater than zero")
@@ -489,10 +532,16 @@ def main():
                                else f"{text or '(silence)'}   [rejected: {why}]")
         transcripts.append(("typed" if source == "manual" else "transcript", text))
 
-    stt = STT(on_transcript, enabled=not a.no_stt)
+    stt = STT(on_transcript, enabled=not a.no_stt,
+              record_dir=os.path.join(a.feed_dir, "audio"))
 
     def act(kind, val):
         if kind == "state":
+            # S7 deliberately clears the S5 pan override while it performs its
+            # person <-> finding gesture. Returning to S5 must restore the plan's
+            # bearing, not fall back to the clip's authored +25-degree template.
+            if val == "S5B_TRACK" and ctxd.get("aimed_pan") is not None:
+                player.arm_pan_deg(float(ctxd["aimed_pan"]))
             player.request(val)
         elif kind == "ui":
             if link:
@@ -549,6 +598,9 @@ def main():
             if view is not None:
                 view.transcript = val
                 view.context = val
+            if UI is not None:
+                with UI.LOCK:
+                    UI.STATE["judgments"] = {}
             sweep.begin()
         elif kind == "pan":
             # Set the aim and stop. Do NOT also announce "arrived:S5_TRACK" here:
@@ -556,6 +608,7 @@ def main():
             # early would let a finding be accepted while the head is still
             # saying "not that one". The loop already reports the player's real
             # state change, which is the only honest source for it.
+            ctxd["aimed_pan"] = float(val)
             player.set_pan_deg(float(val))
         elif kind == "idle":
             # STOP means STOP. The task is discarded, so the watching must end
@@ -571,6 +624,9 @@ def main():
                 view.context, view.transcript = "", ""
                 view.statuses, view.suppressed = [], []
                 view.apply_relevance(None)
+            if UI is not None:
+                with UI.LOCK:
+                    UI.STATE["judgments"] = {}
             print("[flow] watching stopped -- plan cleared")
         elif kind == "pan_next":
             deg, sc = next_best_pan(player.snapshot()["pose_deg"]["pan"])
@@ -579,6 +635,7 @@ def main():
             else:
                 print(f"[aim] nobody answered; moving to pan {deg:+.0f}"
                       + (f" (score {sc})" if sc is not None else ""))
+                ctxd["aimed_pan"] = float(deg)
                 player.set_pan_deg(deg)
         elif kind == "log":
             print(f"[flow] {val}")
@@ -595,12 +652,36 @@ def main():
         ctxd["request"] = request
         try:
             from planning.planner import plan
+            planner_attempt = 0
 
             def plan_fn(context, jpegs):
+                nonlocal planner_attempt
+                planner_attempt += 1
+                started = time.monotonic()
                 r = plan(context, jpegs)
+                audit_write("planner", {
+                    "request": context, "generation": generation,
+                    "attempt": planner_attempt,
+                    "image_count": len(jpegs or []),
+                    "latency_s": round(time.monotonic() - started, 3),
+                    "response": r,
+                }, jpegs or [])
+                print(f"[timing] Gemini planner attempt {planner_attempt}: "
+                      f"{time.monotonic() - started:.2f}s")
                 if r.get("spec") is None or r.get("violations"):
                     print("[planner] invalid result; retrying once ...")
+                    planner_attempt += 1
+                    started = time.monotonic()
                     r = plan(context, jpegs)
+                    audit_write("planner", {
+                        "request": context, "generation": generation,
+                        "attempt": planner_attempt,
+                        "image_count": len(jpegs or []),
+                        "latency_s": round(time.monotonic() - started, 3),
+                        "response": r,
+                    }, jpegs or [])
+                    print(f"[timing] Gemini planner attempt {planner_attempt}: "
+                          f"{time.monotonic() - started:.2f}s")
                 return r
 
             res, meta = sweep.plan(request, plan_fn, UI)
@@ -625,14 +706,13 @@ def main():
                 # look, CV takes over there and stays.
                 print(f"[aim] richest pan {meta['richest_pan']:+d} "
                       f"(score {meta['richest_score']}) -- taking over there")
-                player.set_pan_deg(float(meta["richest_pan"]))
                 # DID THE TARGET CHANGE? That is the whole question S5a exists
                 # to answer, and only the planner can answer it -- the sweep is
-                # additive, so most re-plans re-choose what was already being
-                # watched. Changed: arm S5A_SETTLE, and the crane onto the thing
-                # is an AUTHORED BEAT ("I have come to this one"). Unchanged: say
-                # nothing, S4's `then` falls through to S5B, and the same crane
-                # is an ordinary transition carrying no claim.
+                # additive, so most re-plans re-choose what was already watched.
+                # The planner starts only AFTER S4 has entered its S5 hold, so a
+                # late arm_next() would be consumed by the next unrelated
+                # one-shot (in practice S7a), hijacking S7a -> S7b. Changed aims
+                # therefore request S5A now; unchanged aims simply retarget S5B.
                 #
                 # Same joints, same endpoints, two different claims -- and what
                 # separates them is only whether anybody authored the move. See
@@ -640,10 +720,13 @@ def main():
                 new_pan = float(meta["richest_pan"])
                 prev = ctxd.get("aimed_pan")
                 if prev is None or abs(new_pan - prev) > ST.AIM_CHANGED_DEG:
-                    player.arm_next("S5A_SETTLE")
+                    player.arm_pan_deg(new_pan)
+                    player.request("S5A_SETTLE")
                     print(f"[aim] target CHANGED "
                           f"({'first' if prev is None else f'{prev:+.0f}'}"
                           f" -> {new_pan:+.0f}) -- S5a will announce the arrival")
+                else:
+                    player.set_pan_deg(new_pan)
                 ctxd["aimed_pan"] = new_pan
         except Exception as e:
             # A failed plan must NOT strand the robot: S4/S5 still run, the
@@ -651,6 +734,7 @@ def main():
             print(f"[planner] failed: {e}")
             if view is not None:
                 view.plan_error = f"planner failed: {e}"
+            ui_events.append(f"plan_failed:{e}")
 
     # A finding opens a STORY, not a screenshot. See storyboard.py -- the burst
     # keeps shooting while the moment unfolds, keyframed on truth-vector change,
@@ -706,14 +790,39 @@ def main():
         """Five nearest raw frames at -1,-.5,0,+.5,+1 seconds."""
         return select_temporal_frames(event_frames, onset)
 
+    def publish_judgment(entry, status, note="", generation=None):
+        if UI is None:
+            return
+        if generation is not None and generation != ctxd.get("plan_generation"):
+            return
+        label = str(entry.get("label") or "requested event")
+        with UI.LOCK:
+            UI.STATE.setdefault("judgments", {})[label] = {
+                "status": status, "note": str(note or ""), "time": time.time(),
+            }
+
     def confirm_candidate(candidate):
-        from planning.judge import ReportabilityTaste, judge
+        from planning.judge import ReportabilityTaste, confirmation_claim, judge
         taste = story.taste if story is not None else ReportabilityTaste()
         entry = candidate["entry"]
-        claim = entry.get("label", "requested event")
-        if entry.get("on"):
-            claim += f" on {entry['on']}"
+        claim = confirmation_claim(entry)
+        publish_judgment(entry, "judging", "Checking five event frames with Gemini…",
+                         candidate["generation"])
+        started = time.monotonic()
         result = judge(candidate["images"], None, taste, confirm=claim)
+        audit_write("judge", {
+            "claim": claim, "entry": entry,
+            "onset": candidate["onset"],
+            "generation": candidate["generation"],
+            "latency_s": round(time.monotonic() - started, 3),
+            "result": result,
+        }, candidate["images"])
+        print(f"[timing] Gemini judge: {time.monotonic() - started:.2f}s")
+        publish_judgment(
+            entry, "confirmed" if result.get("confirmed") else "rejected",
+            result.get("note") or result.get("feedback") or "",
+            candidate["generation"],
+        )
         confirmed_findings.append((candidate, result))
 
     try:
@@ -872,6 +981,8 @@ def main():
             # anything is reported or allowed to enter the S7 feedback motion.
             for e in fired:
                 print(f"[watch] candidate: {e.get('label')}")
+                publish_judgment(e, "candidate", "CV gate passed; collecting five frames.",
+                                 ctxd.get("plan_generation", 0))
                 event_candidates.append({
                     "entry": dict(e), "onset": now, "due": now + 1.0,
                     "generation": ctxd.get("plan_generation"),
@@ -889,6 +1000,9 @@ def main():
                 candidate["images"] = event_jpegs(candidate["onset"])
                 if len(candidate["images"]) != 5:
                     print("[confirm] skipped: five event frames unavailable")
+                    publish_judgment(candidate["entry"], "rejected",
+                                     "Five event frames were unavailable.",
+                                     candidate["generation"])
                     continue
                 threading.Thread(target=confirm_candidate, args=(candidate,),
                                  daemon=True).start()

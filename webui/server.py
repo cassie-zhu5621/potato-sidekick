@@ -20,6 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 STATE = {"jpg": None, "feed": [], "thumbs": {}, "frames": {},
          "context": "", "why": "", "entries": [],      # [(expr, label)]
          "status": [],                                  # [dict per entry: see build_status]
+         "judgments": {},                               # label -> candidate/judging/result
          "seen": [], "detect": [], "focus": [],         # relevance layer: enumerate -> tier
          # Additions for the robot, kept SEPARATE from the plan slots above. An
          # earlier version showed the state machine by writing state rows into
@@ -103,6 +104,8 @@ PAGE = """<!doctype html><html><head><meta charset=utf-8><title>attention system
  .dot.sat{background:#D95B5B;box-shadow:0 0 10px #D95B5B}.dot.cool{background:#E89D9D;box-shadow:0 0 9px #E89D9D}
  .estate{font-size:21px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:#9a9a90}
  .estate.sat{color:#D95B5B}.estate.cool{color:#E89D9D}
+ .estate.judging{color:#88E4EA}.estate.confirmed{color:#A1CC48}
+ .estate.rejected{color:#E89D9D}
  .ecap{color:#7a7a70;font-size:17px}
  /* the lit-up logic line — operators are the stars, bigger than relations */
  .logic{display:flex;flex-wrap:wrap;gap:9px;align-items:center}
@@ -291,12 +294,16 @@ async function poll(){
       `<div class=ctx>${p.context||'(no context)'}</div>`+
       (p.why?`<div class=why>why: ${p.why}</div>`:'')+
       (p.status||[]).map(s=>{
-        const state = s.sat?'<span class="estate sat">satisfied</span>'
-                     :(s.cool?'<span class="estate cool">cooling</span>':'<span class=estate>watching</span>');
+        const j=(p.judgments||{})[s.label];
+        const state = j&&j.status==='confirmed'?'<span class="estate confirmed">VLM confirmed</span>'
+                     :j&&j.status==='rejected'?'<span class="estate rejected">VLM rejected</span>'
+                     :j&&j.status==='judging'?'<span class="estate judging">VLM judging</span>'
+                     :s.sat?'<span class="estate sat">CV candidate</span>'
+                     :(s.cool?'<span class="estate cool">cooldown</span>':'<span class=estate>watching</span>');
         return `<div class=entry>
           <div class=ehead><span class="dot ${s.sat?'sat':(s.cool?'cool':'')}"></span>
             ${state}<span class=ecap>${caption(s.label)}</span></div>
-          ${compose(s)}</div>`;
+          ${compose(s)}${j&&j.note?`<div class=detail>${j.note}</div>`:''}</div>`;
       }).join('');
     document.getElementById('aim').innerHTML = renderAim(p);
     const h=document.getElementById('heard');
@@ -416,6 +423,7 @@ class H(BaseHTTPRequestHandler):
             with LOCK:
                 data = {"context": STATE["context"], "why": STATE["why"],
                         "entries": STATE["entries"], "status": STATE["status"],
+                        "judgments": STATE["judgments"],
                         "seen": STATE["seen"], "detect": STATE["detect"],
                         "focus": STATE["focus"], "transcript": STATE["transcript"],
                         "states": STATE["states"],
