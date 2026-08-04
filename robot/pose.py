@@ -22,6 +22,29 @@ UNITS_PER_DEG = 1023 / 300.0
 SAFE_DPS = 120.0
 MIN_MOVE_MS = 220               # floor, so tiny moves still read as movement
 
+# ONE transition is not a transition: the turn to a direction the person has just
+# pointed out (S6 -> S5a). There is no clip around it, so that travel IS the whole
+# event -- the robot's answer to "look over there" -- and a move that carries a
+# result may not be left at a default. It runs at S4's own travel speed, so the
+# body moves at the SAME rate whether it chose the direction or was told it.
+#
+# That is the point: a single travel speed keeps travel from becoming a MORPHEME.
+# If it varied, every turn in the library would mean something and would have to
+# be defended. Fixed, it means nothing, which is exactly what lets the authored
+# beats -- the crane, the shake, the droop -- carry all of it.
+REAIM_DPS = 75.0                # = generate_s4_sweep.STATION_SPEED
+
+# And one more, for the same reason and the opposite feeling: the collapse into
+# S8. S8 is entered from anywhere -- an unusable transcript in S2, a failed plan
+# in S4, a dead camera in S5 -- so there is no predecessor pose to inherit and no
+# authored distance, which is exactly the case a clip cannot hold and a speed can.
+#
+# A TRANSITION INTO A STATE SHOULD NOT BE FASTER THAN THE STATE ITSELF MOVES, or
+# the arrival contradicts the thing it arrives at. Sprinting into a posture that
+# means "I have run out of ideas" would undo it before it is held. So this is
+# S8's own swing peak: the robot deflates at the speed it then sways at.
+COLLAPSE_DPS = 47.0             # = generate_s8_error.py's swing peak, measured
+
 
 def resolve(name, raw_unit):
     """Clip unit -> commanded unit. Order matters: mirror, then trim, then clamp.
@@ -59,13 +82,20 @@ def centre_units():
     return {n: resolve(n, CENTER)[0] for n in JOINTS}
 
 
-def move_ms(from_units, to_units):
-    """How long a move between two poses should take, at SAFE_DPS.
+def move_ms(from_units, to_units, dps=None):
+    """How long a move between two poses should take, at `dps` (default SAFE_DPS).
 
     Distance-scaled, not constant. A fixed duration is the trap here: 200 ms is
     right between neighbouring poses and becomes 600 deg/s across the library
     (S2 ends at pan +60, S4 opens at -60 -- 120 deg apart).
+
+    A SPEED rather than a duration is also what makes the re-aim authorable at
+    all. The angle the person points at is arbitrary and only known at runtime,
+    so it cannot live in a clip; and an eased curve authored for one distance
+    cannot be stretched to another without rewriting the thing it carries (which
+    is why set_pan_deg refuses to retarget S4). A speed travels any distance
+    correctly, so the design decision survives not knowing the number.
     """
     far = max(abs(to_units[n] - from_units[n]) for n in JOINTS)
-    ms = far / UNITS_PER_DEG / SAFE_DPS * 1000.0
+    ms = far / UNITS_PER_DEG / float(dps or SAFE_DPS) * 1000.0
     return int(max(MIN_MOVE_MS, ms)), far

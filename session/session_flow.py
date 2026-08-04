@@ -194,7 +194,7 @@ class SessionFlow:
         if ev == "tap":
             # "not that one". Only meaningful while watching; a tap during the
             # scan would be rejecting a choice that has not been made yet.
-            if self.state == "S5_TRACK":
+            if self.state == "S5B_TRACK":
                 self._go("S6_FINETUNE", "body tap -- wrong direction")
                 self._reaim_at = self.now()
                 self._emit("await_reaim", True)
@@ -208,12 +208,19 @@ class SessionFlow:
             # are the same act: change where it looks, keep what it is looking
             # for. Restricting it to S6 made a late click do nothing at all, with
             # no feedback about why.
-            if self.state in ("S6_FINETUNE", "S5_TRACK"):
+            if self.state in ("S6_FINETUNE", "S5B_TRACK"):
                 self._emit("pan", float(arg))
                 self._reaim_at = None
                 if self.state == "S6_FINETUNE":
-                    self._go("S5_TRACK", f"re-aimed to pan {arg} -- same "
-                                         f"watch-spec, new direction")
+                    # S5A, not S5B. The direction CHANGED and a person changed
+                    # it, so the arrival is a result and the crane onto it is an
+                    # authored beat. The timeout path below goes to S5B instead,
+                    # because there the aim did NOT change -- and that makes
+                    # giving up visibly quieter than being answered, which is
+                    # right: nothing was decided, so nothing is performed.
+                    # See S4_S5_DESIGN.md sec 9.4.
+                    self._go("S5A_SETTLE", f"re-aimed to pan {arg} -- same "
+                                           f"watch-spec, new direction")
                 else:
                     self._emit("log", f"re-aimed to pan {arg} while watching")
             else:
@@ -221,7 +228,7 @@ class SessionFlow:
             return self.out
 
         if ev == "finding":
-            if self.state in ("S5_TRACK",):
+            if self.state in ("S5B_TRACK",):
                 self.noticed += 1
                 self._emit("noticed", self.noticed)
                 self._go("S7a", "a confirmed finding")
@@ -231,13 +238,13 @@ class SessionFlow:
 
         if ev == "ok":
             if self.state in ("S7a", "S7b"):
-                self._go("S5_TRACK", "OK -- seen; back to watching")
+                self._go("S5B_TRACK", "OK -- seen; back to watching")
             return self.out
 
         if ev == "planned":
             # The VLM has answered: the direction and the watch-spec now exist.
             self.plan_pending = False
-            if self.state == "S5_TRACK":
+            if self.state == "S5B_TRACK":
                 self._ui("tracking")
             return self.out
 
@@ -253,7 +260,7 @@ class SessionFlow:
                 # "tracking..." while the answer is still in flight is a claim
                 # about the robot's state that is simply untrue, and a participant
                 # has no way to tell it apart from the real thing.
-                if arg == "S5_TRACK" and self.plan_pending:
+                if arg == "S5B_TRACK" and self.plan_pending:
                     screen = "planning"
                 self._ui(screen)
                 self._s7_at = self.now() if arg == "S7b" else None
@@ -287,7 +294,7 @@ class SessionFlow:
                 # human answer, pick the next-best angle the sweep scored -- the
                 # loop owns that data, so it is asked rather than told.
                 self._emit("pan_next", True)
-                self._go("S5_TRACK", f"no direction within "
+                self._go("S5B_TRACK", f"no direction within "
                                      f"{ST.REAIM_TIMEOUT_S:.0f}s -- moving on to "
                                      f"the next-best angle from the sweep")
             elif (self._s7_at is not None and self.state == "S7b"
@@ -295,7 +302,7 @@ class SessionFlow:
                 # Being ignored is a normal outcome, not a failure: the person is
                 # busy, which is the premise. The finding is already in the feed,
                 # so go back to watching instead of escalating.
-                self._go("S5_TRACK", f"ignored for "
+                self._go("S5B_TRACK", f"ignored for "
                                      f"{ST.S7_IGNORED_TIMEOUT_S:.0f}s -- "
                                      f"already in the feed, back to watching")
             return self.out

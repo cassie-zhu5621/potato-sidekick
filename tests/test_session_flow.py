@@ -42,15 +42,15 @@ f = flow()
 run(f, ["ptt_down", "ptt_up", "transcript:find the blue mug"], "happy")
 expect(f.state == "S3_ACK", f"usable transcript -> S3_ACK (got {f.state})")
 expect(f.transcript == "find the blue mug", "transcript kept for the planner")
-f.feed("arrived:S4_PLAN"); f.feed("arrived:S5_TRACK")
-expect(f.state == "S5_TRACK" and f.screen == "planning",
+f.feed("arrived:S4_PLAN"); f.feed("arrived:S5B_TRACK")
+expect(f.state == "S5B_TRACK" and f.screen == "planning",
        "holds at planning while the VLM is still deciding where to look")
 f.feed("planned")
 expect(f.screen == "tracking", "only says tracking once the direction is known")
 f.feed("finding")
 expect(f.state == "S7a" and f.noticed == 1, "finding -> S7a, count 1")
 f.feed("arrived:S7b"); f.feed("ok")
-expect(f.state == "S5_TRACK", "OK -> back to watching")
+expect(f.state == "S5B_TRACK", "OK -> back to watching")
 
 print("\n--- the waiting screen ---")
 f = flow()
@@ -99,14 +99,14 @@ expect(f.state == "S8_ERROR",
 print("\n--- S7 ignored for 30s ---")
 f = flow()
 run(f, ["ptt_down", "ptt_up", "transcript:watch the door"], "")
-f.feed("arrived:S4_PLAN"); f.feed("arrived:S5_TRACK"); f.feed("finding")
+f.feed("arrived:S4_PLAN"); f.feed("arrived:S5B_TRACK"); f.feed("finding")
 f.feed("arrived:S7b")
 CLOCK[0] += 20
 f.feed("tick")
 expect(f.state == "S7b", "still beckoning at 20s")
 CLOCK[0] += 15
 out = f.feed("tick")
-expect(f.state == "S5_TRACK", "past 30s -> back to watching, not escalating")
+expect(f.state == "S5B_TRACK", "past 30s -> back to watching, not escalating")
 expect(f.noticed == 1, "the finding stays counted -- it is in the feed")
 
 print("\n--- STOP works from everywhere ---")
@@ -115,9 +115,9 @@ for st_events in (["ptt_down"],
                   ["ptt_down", "ptt_up", "transcript:find the mug"],
                   ["ptt_down", "ptt_up", "transcript:find the mug", "arrived:S4_PLAN"],
                   ["ptt_down", "ptt_up", "transcript:find the mug",
-                   "arrived:S4_PLAN", "arrived:S5_TRACK"],
+                   "arrived:S4_PLAN", "arrived:S5B_TRACK"],
                   ["ptt_down", "ptt_up", "transcript:find the mug",
-                   "arrived:S4_PLAN", "arrived:S5_TRACK", "finding"]):
+                   "arrived:S4_PLAN", "arrived:S5B_TRACK", "finding"]):
     f = flow()
     run(f, st_events, "")
     before = f.state
@@ -130,35 +130,39 @@ f = flow()
 run(f, ["ptt_down", "ptt_up", "transcript:find the mug"], "")
 out = f.feed("tap")
 expect(f.state == "S3_ACK", "tap during S3 is ignored")
-f.feed("arrived:S4_PLAN"); f.feed("arrived:S5_TRACK")
+f.feed("arrived:S4_PLAN"); f.feed("arrived:S5B_TRACK")
 out = f.feed("tap")
 expect(f.state == "S6_FINETUNE", "tap during S5 -> S6")
 out = f.feed("reaim:-30")
 expect(("pan", -30.0) in out, "re-aim emits a pan target")
-expect(f.state == "S5_TRACK", "the re-aim ITSELF returns to watching")
+# S5A, not S5B: an ANSWERED correction changed the target, so the crane onto it
+# is an authored beat. The timeout path below is the one that goes straight to
+# S5B -- nothing was decided there, so nothing is performed. S4_S5_DESIGN sec 9.4.
+expect(f.state == "S5A_SETTLE", "an answered re-aim announces the arrival (S5a)")
 
 print("\n--- S6 waits for a direction; a late click still works ---")
 f = flow()
 run(f, ["ptt_down", "ptt_up", "transcript:find the mug",
-        "arrived:S4_PLAN", "arrived:S5_TRACK", "tap"], "")
+        "arrived:S4_PLAN", "arrived:S5B_TRACK", "tap"], "")
 CLOCK[0] += 5
 f.feed("tick")
 expect(f.state == "S6_FINETUNE", "still asking at 5s -- does not race the clip")
 out = f.feed("reaim:30")
-expect(f.state == "S5_TRACK" and ("pan", 30.0) in out, "a direction at 5s lands")
+expect(f.state == "S5A_SETTLE" and ("pan", 30.0) in out,
+       "a direction at 5s lands, and announces the arrival")
 
 f = flow()
 run(f, ["ptt_down", "ptt_up", "transcript:find the mug",
-        "arrived:S4_PLAN", "arrived:S5_TRACK", "tap"], "")
+        "arrived:S4_PLAN", "arrived:S5B_TRACK", "tap"], "")
 CLOCK[0] += 20
 f.feed("tick")
-expect(f.state == "S5_TRACK", "no direction in 15s -> watches anyway, not stuck")
+expect(f.state == "S5B_TRACK", "no direction in 15s -> watches anyway, not stuck")
 
 f = flow()
 run(f, ["ptt_down", "ptt_up", "transcript:find the mug",
-        "arrived:S4_PLAN", "arrived:S5_TRACK"], "")
+        "arrived:S4_PLAN", "arrived:S5B_TRACK"], "")
 out = f.feed("reaim:-60")
-expect(("pan", -60.0) in out and f.state == "S5_TRACK",
+expect(("pan", -60.0) in out and f.state == "S5B_TRACK",
        "a nudge while already watching is accepted too")
 
 print("\n--- PTT after STOP starts fresh ---")
@@ -223,8 +227,8 @@ for good in ["watch the roundtable area at my lab",
 # Typed text re-plans from EVERY state, including mid-watch. This is the wizard
 # channel and it has to feel immediate; gating it on state made it read as broken.
 for extra, label in [(["arrived:S4_PLAN"], "S4_PLAN"),
-                     (["arrived:S4_PLAN", "arrived:S5_TRACK"], "S5_TRACK"),
-                     (["arrived:S4_PLAN", "arrived:S5_TRACK", "tap"], "S6_FINETUNE")]:
+                     (["arrived:S4_PLAN", "arrived:S5B_TRACK"], "S5B_TRACK"),
+                     (["arrived:S4_PLAN", "arrived:S5B_TRACK", "tap"], "S6_FINETUNE")]:
     f = flow()
     run(f, ["ptt_down", "ptt_up", "transcript:find the mug"] + extra, "")
     expect(f.state == label, f"precondition: in {label}")
@@ -274,7 +278,7 @@ print("\n--- STOP reaches perception, not just the motors ---")
 for st_events, label in [
         (["ptt_down", "ptt_up", "transcript:find the mug", "arrived:S4_PLAN"], "S4_PLAN"),
         (["ptt_down", "ptt_up", "transcript:find the mug",
-          "arrived:S4_PLAN", "arrived:S5_TRACK"], "S5_TRACK")]:
+          "arrived:S4_PLAN", "arrived:S5B_TRACK"], "S5B_TRACK")]:
     f = flow()
     run(f, st_events, "")
     out = f.feed("stop")
@@ -286,7 +290,7 @@ f = flow()
 run(f, ["ptt_down", "ptt_up", "transcript:watch the roundtable",
         "arrived:S4_PLAN"], "")
 expect(f.screen == "planning", "S4 -> planning")
-f.feed("arrived:S5_TRACK")
+f.feed("arrived:S5B_TRACK")
 expect(f.screen == "planning",
        "S5 begins (head holds the last swept angle) but still says planning")
 f.feed("planned")
@@ -294,20 +298,20 @@ expect(f.screen == "tracking", "the VLM answered -> tracking")
 
 f = flow()                         # a re-plan re-arms it
 run(f, ["ptt_down", "ptt_up", "transcript:watch the door",
-        "arrived:S4_PLAN", "arrived:S5_TRACK", "planned"], "")
+        "arrived:S4_PLAN", "arrived:S5B_TRACK", "planned"], "")
 f.feed("typed:watch the whiteboard instead")
-f.feed("arrived:S4_PLAN"); f.feed("arrived:S5_TRACK")
+f.feed("arrived:S4_PLAN"); f.feed("arrived:S5B_TRACK")
 expect(f.screen == "planning", "a re-plan puts it back to planning")
 
 print("\n--- ignored 'not that' moves ON, not back to the same view ---")
 f = flow()
 run(f, ["ptt_down", "ptt_up", "transcript:find the mug",
-        "arrived:S4_PLAN", "arrived:S5_TRACK", "planned", "tap"], "")
+        "arrived:S4_PLAN", "arrived:S5B_TRACK", "planned", "tap"], "")
 CLOCK[0] += 20
 out = f.feed("tick")
 expect(("pan_next", True) in out,
        "no answer in 15s -> ask for the NEXT-best angle, not the rejected one")
-expect(f.state == "S5_TRACK", "and it goes back to watching")
+expect(f.state == "S5B_TRACK", "and it goes back to watching")
 
 print("\n--- transcript_usable thresholds ---")
 for text, want in [("find the blue mug", True), ("", False), ("hm", False),

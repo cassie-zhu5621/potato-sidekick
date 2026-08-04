@@ -34,7 +34,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(
 from robot.scs import Bus, open_bus
 from robot.pose import (JOINTS, IDS, CENTER, UNITS_PER_DEG, resolve, centre_units,
                   unit_to_deg,
-                  move_ms)
+                  move_ms, REAIM_DPS, COLLAPSE_DPS)
 from robot import states as ST
 
 DEFAULT_CLIPS = os.path.join(os.path.dirname(os.path.dirname(
@@ -53,7 +53,7 @@ LED_HEARTBEAT_S = 0.30  # must stay well under the firmware's 500 ms fallback,
                         # silently hands the LED back to the local one
 
 
-def load_clip(path):
+def load_clip(path, loops=False):
     """-> list of {t, pan, tilt, nod} in COMMANDED units. Clamping is a bug in
     the clip, so it is reported once here rather than swallowed per frame."""
     with open(path) as fh:
@@ -62,13 +62,20 @@ def load_clip(path):
         raise ValueError(f"{path}: empty")
     has_nod = "nod_unit" in rows[0]
     has_led = "led" in rows[0]
-    if has_led:
-        # A CONSTANT led column means nobody authored an envelope for this clip
-        # (S1_IDLE and S8_ERROR have no generator, so they export the material's
-        # static Strength). Streaming a constant would be worse than streaming
-        # nothing: the firmware only falls back to its own breathing after 500 ms
-        # of silence, so a steady value pins the LED solid forever -- exactly the
-        # states where "alive" matters most would be the ones that look dead.
+    if has_led and loops:
+        # A CONSTANT led column on a LOOPING clip means nobody authored an
+        # envelope -- the export just sampled the material's static Strength.
+        # Streaming that would be worse than streaming nothing: the firmware only
+        # falls back to its own breathing after 500 ms of silence, so a steady
+        # value pins the LED solid FOREVER, and a loop has no end at which to
+        # recover. Exactly the states where "alive" matters most would look dead.
+        #
+        # ONLY for loops, though. A one-shot may hold a constant on purpose --
+        # S5A_SETTLE does, and its whole design is that it is available rather
+        # than addressed, so it deliberately has no accent. Discarding that
+        # handed 1.2 s of a 1.23 s clip back to the device envelope mid-beat,
+        # which reads as a blink between S4's flash and S5b's breath. A short
+        # held value is an envelope; an endless one is a missing envelope.
         vals = {int(float(r["led"])) for r in rows}
         if len(vals) <= 1:
             has_led = False
@@ -91,6 +98,14 @@ class ClipPlayer:
                  on_sfx=None):
         self.bus = bus
         self.verbose = verbose
+        # Dead-band feedforward. Off if the floors have never been measured --
+        # guessing them would make the motion worse, not better.
+        try:
+            from robot.calibration import FLOORS
+            self._floors = dict(FLOORS)
+        except ImportError:
+            self._floors = {}
+        self._prev_cmd = {}
         # Called with 0-255 when the clip's authored LED level changes. Kept as a
         # callback so the player stays a servo-only component: the LED lives on a
         # different device, on a different serial port, and a dropped LED update
@@ -108,13 +123,16 @@ class ClipPlayer:
         self._pending_sfx = None
         self._pending_at = 0.0
         self._pan_override = None
-        self._pan_pending = None      # armed now, applied when S5_TRACK begins
+        self._pan_pending = None      # armed now, applied when S5B_TRACK begins
+        self._next_override = None    # armed now, consumed by the next `then`
         self.clips = {}
         for fn in sorted(os.listdir(clips_dir)):
             if fn.endswith(".csv"):
                 name = fn[:-4]
+                loops = any(st["clip"] == name and st["loop"]
+                            for st in ST.STATES.values())
                 fr, clamped, has_nod, has_led = load_clip(
-                    os.path.join(clips_dir, fn))
+                    os.path.join(clips_dir, fn), loops=loops)
                 self.clips[name] = fr
                 if clamped and verbose:
                     print(f"[player] !! {name}: {clamped} would be clamped -- "
@@ -146,11 +164,11 @@ class ClipPlayer:
     def set_pan_deg(self, deg):
         """Re-aim the watching pose, in Blender degrees.
 
-        Only meaningful for a STATIC clip, which is exactly why S5_TRACK is one:
-        a hold has no authored timing to damage, so the pan can simply be
-        replaced. S4 could not be retargeted this way -- its return is an eased
-        curve authored for one specific distance, and stretching it would rewrite
-        the very thing the clip exists to carry.
+        Only meaningful for a clip whose pan is STATIC, which is why S5_TRACK and
+        S5A_SETTLE both are: a constant has no authored timing to damage, so the
+        pan can simply be replaced. S4 could not be retargeted this way -- its
+        return is an eased curve authored for one specific distance, and
+        stretching it would rewrite the very thing the clip exists to carry.
 
         The tap that led here said "wrong direction", not "wrong task", so the
         watch-spec is untouched.
@@ -170,9 +188,39 @@ class ClipPlayer:
         already moved the head to the clip's authored HOLD_PAN, so the head visibly
         swings to 25 deg and then swings back. Arming stores the angle; the
         transition consumes it, and the head simply stays where the sweep left it.
+
+        Two callers, and they want opposite things from the same mechanism:
+
+          S4 -> S5a   the sweep has ALREADY arrived at the chosen station, so the
+                      armed angle is the angle the body is at, and consuming it
+                      produces NO travel. The crane is the whole beat.
+          S6 -> S5a   the body is still on the REFUSED bearing, so consuming it
+                      produces the turn to the corrected direction, upright, at
+                      REAIM_DPS. Here the travel is the beat and the crane
+                      completes it.
+
+        Same call, and the difference is only how far it happens to be -- which is
+        what a speed buys and a duration would not.
         """
         self._pan_pending = resolve(
             "pan", max(0, min(1023, round((deg + 150.0) / 300.0 * 1023))))[0]
+
+    def arm_next(self, state):
+        """Override the NEXT `then`, once. Consumed when a one-shot finishes.
+
+        S4 is the only caller: it always ends up watching, but whether the crane
+        onto the target is an AUTHORED BEAT (S5a) or a bare transition (S5b)
+        depends on something only the planner knows -- did the chosen target
+        actually change. The sweep is additive and usually it did not.
+
+        This cannot be `request()`: that interrupts the running clip, and calling
+        it during S4 would cut the sweep off mid-turn. Arming stores the choice
+        and the clip finishes first -- the same shape as arm_pan_deg().
+        """
+        if state not in ST.STATES:
+            raise KeyError(state)
+        with self._lock:
+            self._next_override = state
 
     def request(self, state):
         """Ask for a state. Takes effect within a frame; interrupts a clip."""
@@ -214,24 +262,57 @@ class ClipPlayer:
                     pass
 
     # ---------------- internals ----------------
+    def _lead(self, units):
+        """Bias each command in the direction it is travelling, by half the
+        joint's measured dead band.
+
+        Without this the joints start at different times even though they are
+        commanded within 0.4 ms of each other. A servo does not move until its
+        error exceeds its dead band, and the dead bands differ: tilt 7 units,
+        nod 12. On a slow ramp the command takes 0.66 s to build 7 units of
+        error and 0.98 s to build 12, so nod starts a third of a second after
+        tilt -- and at every direction reversal it has to unwind TWICE the dead
+        band first, which is the long pause that reads as "the nod happens after
+        the tilt".
+
+        Leading the command by half the dead band puts the servo at the edge of
+        breaking free, so it starts when the motion starts. This is ordinary
+        dead-band feedforward, not a trick: it changes when the joint moves, not
+        where it ends up.
+        """
+        if not self._floors:
+            return units
+        out = dict(units)
+        for j in JOINTS:
+            d = units[j] - self._prev_cmd.get(j, units[j])
+            if d:
+                out[j] = units[j] + (1 if d > 0 else -1) * (self._floors.get(j, 0) // 2)
+        self._prev_cmd = dict(units)
+        return out
+
     def _send(self, units, timed_ms=0):
         changed = any(units[j] != self.cur[j] for j in JOINTS)
+        cmd = units if timed_ms else self._lead(units)
         for j in JOINTS:
             if timed_ms:
-                self.bus.write_pos(IDS[j], units[j], time_ms=timed_ms, speed=0)
+                self.bus.write_pos(IDS[j], cmd[j], time_ms=timed_ms, speed=0)
             else:
-                self.bus.write_pos_fast(IDS[j], units[j], time_ms=0, speed=0)
+                self.bus.write_pos_fast(IDS[j], cmd[j], time_ms=0, speed=0)
         self.cur.update(units)
         if changed:
             self._pose_changed_at = time.perf_counter()
 
-    def _goto(self, units, label=""):
+    def _goto(self, units, label="", dps=None):
         """A move nobody authored: transition, pre-roll, homing. Duration scales
-        with distance so a long hop is not a lurch."""
+        with distance so a long hop is not a lurch.
+
+        `dps` overrides SAFE_DPS for the one transition that IS authored -- the
+        re-aim into S5a. See pose.REAIM_DPS.
+        """
         self.bus.flush_input()      # arrive with a clean buffer, whatever ran before
         for sid in IDS.values():
             self.bus.torque(sid, True)
-        ms, far = move_ms(self.cur, units)
+        ms, far = move_ms(self.cur, units, dps=dps)
         if self.verbose and far > 20:
             print(f"[player] {label or 'move'}: {far} units "
                   f"({far / UNITS_PER_DEG:.0f} deg) over {ms} ms")
@@ -271,7 +352,15 @@ class ClipPlayer:
                 now = time.perf_counter()
             late = max(late, now - target)
             units = {j: f[j] for j in JOINTS}
-            if self.state == "S5_TRACK" and self._pan_override is not None:
+            # Both of these hold pan CONSTANT by design -- S5_TRACK because it is
+            # a hold, S5a because its pan is deliberately static ("pan does not
+            # move here": the crane is the beat, the turn already happened). A
+            # constant has no authored timing to damage, so the angle can simply
+            # be replaced. Without this the override would survive _goto and then
+            # be overwritten frame by frame with the clip's template +25, and the
+            # robot would visibly swing back off the direction it was just given.
+            if (self.state in ST.PAN_RETARGETABLE
+                    and self._pan_override is not None):
                 units["pan"] = self._pan_override
             self._send(units)
 
@@ -357,16 +446,32 @@ class ClipPlayer:
             spec = ST.STATES[nxt]
             frames = self.clips[spec["clip"]]
             first = {j: frames[0][j] for j in JOINTS}
-            # A re-aim only applies to the clip it was aimed at; entering anything
+            # A re-aim only applies to the clips it was aimed at; entering anything
             # else clears it, so an old override cannot silently steer a later state.
-            if nxt != "S5_TRACK":
+            #
+            # S5A_SETTLE is in the set because it is how a CORRECTED aim arrives.
+            # It was not, and the bug was silent in the worst way: the armed angle
+            # was dropped and S5a played at its hard-coded template pan, so the
+            # robot answered "look over there" by craning at +25 regardless of
+            # where the person had pointed.
+            if nxt not in ST.PAN_RETARGETABLE:
                 self._pan_override = None
             else:
                 if self._pan_pending is not None:
                     self._pan_override, self._pan_pending = self._pan_pending, None
                 if self._pan_override is not None:
                     first["pan"] = self._pan_override
-            self._goto(first, label=f"-> {nxt}")
+            # The turn into S5a is the answer to a person, not a transition, so it
+            # runs at the authored travel speed. S5a itself opens UPRIGHT and S6
+            # closes upright, so this move is pan-only: the body turns to the new
+            # direction straight-backed, and the lean is S5a's own first beat.
+            # Leaning DURING the turn would mean attending to everything it passes,
+            # which is the same reason S4 sweeps level.
+            # Two transitions are authored, and both as SPEEDS rather than as
+            # clips, because neither knows its distance until runtime.
+            self._goto(first, label=f"-> {nxt}",
+                       dps={"S5A_SETTLE": REAIM_DPS,
+                            "S8_ERROR": COLLAPSE_DPS}.get(nxt))
             self.state, self.loops_done = nxt, 0
             self._flash_sfx = spec.get("sfx_flash")
             self._in_flash = False
@@ -391,7 +496,15 @@ class ClipPlayer:
                     break                       # interrupted by a request
                 self.loops_done += 1
                 if spec["loop"]:
-                    if spec.get("sfx") and spec.get("sfx_loop"):
+                    # sfx_every throttles a looping sound. S8's loop is 4 s and
+                    # its exit is STOP only, so replaying on EVERY pass is 15
+                    # cries a minute for as long as nobody comes -- an alarm, not
+                    # the "keep asking" the field means. Re-arm on every Nth pass
+                    # instead; the sound still recurs, at a rate a person can sit
+                    # in the same room as.
+                    every = max(1, int(spec.get("sfx_every", 1) or 1))
+                    if (spec.get("sfx") and spec.get("sfx_loop")
+                            and self.loops_done % every == 0):
                         if self._pending_at <= 0.0:
                             try:
                                 self.on_sfx and self.on_sfx(spec["sfx"])
@@ -402,8 +515,15 @@ class ClipPlayer:
                     continue
                 if spec["then"]:
                     with self._lock:
+                        # An armed override wins over the declared default, and
+                        # is consumed either way so it cannot steer a later
+                        # state. Unarmed, S4 -> S5B and the re-crane is an
+                        # ordinary transition; armed, S4 -> S5A and the crane is
+                        # the beat. Same joints, same endpoints, two different
+                        # claims -- see S4_S5_DESIGN.md sec 3.05.
+                        nxt2, self._next_override = self._next_override, None
                         if not self._want:
-                            self._want = spec["then"]
+                            self._want = nxt2 or spec["then"]
                 break
             # A one-shot with no `then` simply holds its last pose: fall back to
             # the outer loop and wait for the next request.
@@ -435,18 +555,35 @@ def _main():
     # on the servo side.
     if a.led_test:
         from session.cores3_link import CoreS3Link, find_cores3
-        c3 = a.cores3 if (a.cores3 and a.cores3 != "auto") else find_cores3()
+        # Exclude the servo port here too. Without it, auto-detection probes the
+        # servo adapter, and -- worse -- a hand-typed --cores3 pointing at the
+        # servo port opens fine, accepts every write and lights nothing, with no
+        # error anywhere.
+        servo_port = os.environ.get("NOTICEBOT_PORT")
+        c3 = a.cores3 if (a.cores3 and a.cores3 != "auto") else find_cores3(
+            exclude=(servo_port,) if servo_port else ())
         if not c3:
             sys.exit("no CoreS3 found -- pass --cores3 /dev/cu.usbmodemXXXX")
+        if servo_port and os.path.realpath(c3) == os.path.realpath(servo_port):
+            sys.exit(f"{c3} is NOTICEBOT_PORT (the servo bus), not the CoreS3.")
         link = CoreS3Link(c3, on_input=lambda s: print(f"[cores3] {s}"))
         print("EVT HUE COOL, then LED 0/255 five times, 0.6s apart.")
         print("  steps between dark and full  -> firmware has EVT LED")
         print("  only the old breathing       -> NOT reflashed yet")
         link.hue("COOL")
+        # Re-send inside the hold: the firmware reverts to its own breathing
+        # after A_EXT_TIMEOUT = 500 ms of silence, so a 0.6 s gap let the board
+        # breathe between steps -- which looks exactly like the "not reflashed"
+        # symptom this test exists to rule out.
         for v in (0, 255, 0, 255, 0):
-            print(f"  EVT LED {v}")
-            link.led(v)
-            time.sleep(0.6)
+            print(f"  EVT LED {v}", flush=True)
+            for _ in range(4):
+                link.led(v)
+                time.sleep(0.2)
+        print("  done. If the antenna never lit AT ALL -- not even the warm "
+              "breath at boot -- the link is not the problem: check the Grove "
+              "lead on the CLK=8/DATA=9 port, and that leds.init() is called.",
+              flush=True)
         link.close()
         return
 
@@ -517,7 +654,14 @@ def _main():
             # Wait for it to actually BE the state, then for the exit condition:
             # a loop state has no natural end, so give it two full passes; a
             # one-shot is done when the player has moved on or is holding.
-            arrived, deadline = False, time.time() + 40
+            # The deadline has to come from the clip, not a constant: S1_IDLE is
+            # 40.0 s and S5B_TRACK is 57.6 s, so a flat 40 s cut both short and
+            # reported a pass on a state it had never finished watching. One pass
+            # for a one-shot, two for a loop (the point of a loop is that its
+            # seam is invisible, and you cannot see a seam you never reach).
+            dur = p.clips[spec["clip"]][-1]["t"]
+            arrived = False
+            deadline = time.time() + dur * (2.2 if spec["loop"] else 1.0) + 8
             while time.time() < deadline:
                 snap = p.snapshot()
                 if snap["error"]:

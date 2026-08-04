@@ -58,6 +58,7 @@ class Jog:
         # other two.
         self.prev_centre, self.prev_limits = {}, {}
         self.prev_invert = {}
+        self.prev_floors = {}
         self.prev_uncal = set()
         try:
             from robot import calibration as _c
@@ -68,6 +69,10 @@ class Jog:
             # the render does. Earlier versions of save() rewrote all three to False,
             # silently discarding findings that cost a hardware session to establish.
             self.prev_invert = dict(getattr(_c, "INVERT", {}))
+            # Measured by deadband_probe, not by jogging. Carried over for the
+            # same reason as INVERT: regenerating this file must not silently
+            # discard a measurement that cost a hardware session.
+            self.prev_floors = dict(getattr(_c, "FLOORS", {}))
             if any(self.prev_invert.values()):
                 flipped = ", ".join(sorted(k for k, v in self.prev_invert.items() if v))
                 print(f"carrying over INVERT=True for: {flipped}")
@@ -249,6 +254,14 @@ class Jog:
             note = "" if n in self.prev_invert else "   # never confirmed against a render"
             lines.append(f'    "{n}": {v},{note}')
         lines.append("}")
+        if self.prev_floors:
+            lines.append("")
+            lines.append("# Carried over from deadband_probe -- not measured by jog.py.")
+            lines.append("FLOORS = {")
+            for n in ORDER:
+                if n in self.prev_floors:
+                    lines.append(f'    "{n}": {self.prev_floors[n]},')
+            lines.append("}")
         with open(path, "w") as f:
             f.write("\n".join(lines) + "\n")
         return path

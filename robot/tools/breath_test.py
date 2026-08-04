@@ -2,7 +2,7 @@
 """
 Find the smallest tilt breath that actually reads as breathing on THIS build.
 
-Holds S5_TRACK's pose and breathes the neck at a series of amplitudes, smallest
+Holds S5B_TRACK's pose and breathes the neck at a series of amplitudes, smallest
 first, announcing each one. Watch the robot and note where it stops looking like
 a twitch and starts looking alive.
 
@@ -28,7 +28,7 @@ from robot import calibration as cal
 
 from robot import IDS  # single source of truth: robot/__init__.py
 UNITS_PER_DEG = 1023 / 300.0
-POSE = {"pan": 25.0, "tilt": -12.0, "nod": 0.0}     # = S5_TRACK / end of S4
+POSE = {"pan": 25.0, "tilt": -12.0, "nod": 0.0}     # = S5B_TRACK / end of S4
 RATE_HZ = 30
 ARRIVE_TOL = 8      # units. Normal settling error under load is a few units;
                     # 8 (2.3 deg) is loose enough not to cry wolf, tight enough

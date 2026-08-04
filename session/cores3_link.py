@@ -106,9 +106,15 @@ class CoreS3Link:
                 time.sleep(0.2)
 
     # ---- send ----
-    def event(self, cmd: str, arg: str = ""):
+    def event(self, cmd: str, arg=""):
+        # `arg is not None and arg != ""`, NOT `if arg`. Integer 0 is falsy, so
+        # the obvious version silently dropped the argument from every zero:
+        # EVT LED 0, EVT LEVEL 0 and EVT VOL 0 (mute) all went out as bare
+        # commands. The firmware parses a missing arg as "".toInt() == 0, so
+        # they happened to do the right thing -- which is why this survived. Any
+        # future command where 0 differs from "absent" would not be so lucky.
         msg = f"EVT {cmd}".strip()
-        if arg:
+        if arg is not None and arg != "":
             msg += " " + str(arg)
         try:
             with self._wlock:

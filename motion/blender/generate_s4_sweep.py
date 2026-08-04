@@ -1,105 +1,186 @@
-# Auto-generates the S4 PLANNING sweep clip — 3-DOF. Run inside S4_PLAN.blend
-# after repair_rig.py + add_nod_joint.py. Overwrites all keys.
+# Auto-generates S4 PLAN (3-DOF + LED). Run inside S4_PLAN.blend after
+# repair_rig.py + add_nod_joint.py. OVERWRITES all keys.
+# Design rationale: ../../../robot_motion/S4_S5_DESIGN.md (local, not in this repo).
 #
-# v2 (2026-07-26). Rewritten after testing v1 on the real prototype. Three
-# things changed, all driven by hardware/observation rather than taste:
+# S4 goes and looks: it sweeps the forward field and captures one frame per
+# station. IT DOES NOTHING ELSE. Arriving at the chosen thing belongs to S5a.
 #
-# 1. NO NOD ANYWHERE. v1 gave a nod "peck" at every capture station and ended
-#    with the head dropped (LOCK_NOD = -6). Two problems: the peck swings the
-#    camera exactly when it is supposed to be taking a picture, and the dropped
-#    head means the pose S4 hands to S5 is a downward stare, not a level gaze.
-#    Capture is now signalled by the LED alone — the camera stays still, and
-#    "I photographed this" is carried by light rather than motion.
+# ONE JOB, AND THE REASON IS THE PROJECT'S OWN LIMIT CASE.
 #
-# 2. PAN RANGE ±150° -> ±60°. The real robot cannot do ±150°: measured travel
-#    is 268..768 servo units about centre 508, i.e. -70°..+76°, and it is the
-#    cable loom through the pan axis that sets that, not the servo. ±60° leaves
-#    ~10° of margin at the tighter end. (hardware/calibration.py has the
-#    measurements and how they were taken.)
+#   S4 no longer runs only after S3. It also fires on its own -- after 30 s of
+#   tracking nothing, and periodically -- because an object that entered the room
+#   after the last plan has never been detected, is not in the candidate set, and
+#   can therefore never be chosen. The camera sees 58 deg on a body that pans
+#   ~115: it cannot know what is outside the frame without moving.
 #
-# 3. SOFTER ARRIVAL. v1 snapped in with 4° of pan overshoot plus overshoot on
-#    both tilt and nod. On hardware that reads as a slam. Now: a long
-#    decelerating return, 1.5° of overshoot, and a lean-in that eases.
+#   That is not a movement <=> result violation. The rule governs EXPRESSIVE
+#   movement; a sweep is EPISTEMIC -- it is not reporting a detection, it IS the
+#   detecting, and it is honest because the robot genuinely cannot see without it.
 #
-# Ends at pan +25°, tilt -12°, nod 0° — which IS S5_TRACK's opening pose, so the
-# handover into tracking needs no transition of its own.
+#   The periodic sweep is ADDITIVE: it extends the candidate set rather than
+#   re-choosing from scratch, so it cannot silently undo a correction the user
+#   made with a body tap.
+#
+#   Being additive, it will often change nothing -- and a clip that ended by
+#   craning in to "the chosen one" would then perform a decision that did not
+#   happen, every five minutes, about the object it was already watching.
+#   NO RESULT, NO MOVEMENT.
+#
+#   Rather than branch inside this clip, the arrival was made its own state:
+#
+#     target CHANGED  ->  S4 -> S5a -> S5b.  S5a is the arrival, AUTHORED: the
+#                         crane with the head lift trailing it. "I have come to
+#                         this one, and now I am looking at it."
+#     target SAME     ->  S4 -> S5b.         The re-crane is a TRANSITION -- the
+#                         player travels between two held poses, carrying no
+#                         expressive content. Nothing is authored because nothing
+#                         happened.
+#
+#   So the limit case is expressed by NOT ENTERING A STATE, which is cleaner than
+#   any branch. S4 therefore ends LEVEL at the chosen pan, and never cranes.
+#
+# SIGN CONVENTION, two frames that run opposite:
+#   BLENDER, what you author here:   positive nod = head UP
+#   SERVO UNITS, what the bus sees:  higher unit  = head DOWN
+# INVERT in robot/calibration.py reconciles them. Author against the render.
 
 import bpy
 import math
 
-# ---- tune ----
-CAM_HFOV = 58.0        # OV4688 UVC module, 32x32mm: D=71°, H=58°.
-                       # NOT the 96° in HANDOFF_hardware_playback.md -- that
-                       # figure was for the old OV2735 and is now stale.
+# ---- field ----
+CAM_HFOV = 58.0        # OV4688 UVC module, 32x32mm: D=71 deg, H=58 deg.
+SWEEP_DEG = 60.0       # sweep runs +SWEEP_DEG .. -SWEEP_DEG.
+                       #
+                       # Covered field is 2*SWEEP + CAM_HFOV = 178 deg, i.e. the
+                       # forward 180 the study cares about.
+                       #
+                       # This value went 60 -> 55 -> 60. It was cut when the pan
+                       # rail read +57.4 and a sweep starting at +60 was clamped
+                       # on the state's FIRST FRAME. The rail turned out to be a
+                       # DATA CABLE routed in front of the neck; re-routing it
+                       # gave pan +69.7 back, and 60 now has 9.7 deg of margin.
+                       #
+                       # So the old note -- "the cable limit and the coverage
+                       # requirement land on the same number" -- was accidentally
+                       # true, and for the wrong reason. A REACHABLE RANGE IS AN
+                       # ASSEMBLY STATE, NOT A PROPERTY OF THE BUILD.
+N_STATIONS = 5         # COVERAGE constraint, not taste: the step must stay under
+                       # CAM_HFOV or the sweep leaves unphotographed gaps.
+                       #   N=3  step 60.0  GAP -- over the 58 deg frame
+                       #   N=4  step 40.0  31% overlap
+                       #   N=5  step 30.0  48% overlap   <- used
+                       # Beyond coverage it buys how deliberate the scan LOOKS,
+                       # and how finely "richest position" resolves (= one step).
+RICHEST_DEG = 25.0     # demo value; at runtime from the VLM's richest_frame_index.
+                       # ALSO S5B_TRACK's HOLD_PAN -- S4 hands straight into S5.
 
-N_STATIONS = 5         # Now partly a COVERAGE constraint, not just taste: with
-                       # a 58° horizontal frame the step must stay under 58° or
-                       # the sweep leaves unphotographed gaps between stations.
-                       #   N=3  step 60°  5.0 s   GAP -- do not use
-                       #   N=4  step 40°  5.6 s   31% overlap, minimum sensible
-                       #   N=5  step 30°  6.2 s   48% overlap
-                       #   N=7  step 20°  7.4 s   66% overlap
-                       # Beyond coverage it still buys how deliberate the scan
-                       # LOOKS, and how finely the "richest position" resolves
-                       # (= one step). Travel time rescales itself via
-                       # STATION_SPEED, so the character holds at any N.
-SWEEP_DEG = 60.0       # sweep runs -SWEEP_DEG .. +SWEEP_DEG.
-                       # Each frame also sees CAM_HFOV/2 past the head's aim, so
-                       # the covered field is 2*SWEEP_DEG + CAM_HFOV = 178° —
-                       # i.e. the forward 180° the study cares about. The pan
-                       # cable limit (-70°/+76°) and that requirement land on the
-                       # same number, so widening the sweep buys nothing.
-RICHEST_DEG = 25.0     # demo value; at runtime from the VLM's richest_frame_index
-                       # (also S5_TRACK's pan, so S4 hands straight into S5)
+# ---- pose ----
+SWEEP_TILT = 0.0       # neck VERTICAL for the whole sweep. The lean is what makes
+                       # the ending read as a change of posture; leaning
+                       # throughout would spend that signal on nothing.
+LEAN_TILT = -12.0      # = S5B_TRACK HOLD_TILT
+LEAN_NOD = 12.0        # = S5B_TRACK HOLD_NOD. EXACTLY cancels the lean: the
+                       # gaze is level at -12 + 12 = 0. S5b holds this for
+                       # minutes, so the camera frame has to be right.
 
+# ---- timing ----
 STATION_SPEED = 75.0   # deg/s between stations. Set the SPEED, not the frame
                        # count, so changing N_STATIONS keeps the same feel and
                        # cannot accidentally push past the servo ceiling.
 SETTLE_F = 8           # frames standing still after arriving, BEFORE the shutter
 DWELL_F = 18           # total frames parked at each station
+RETURN_SPEED = 75.0    # deg/s back to the chosen station. SAME as the sweep:
+                       # this is travel, not a decision. The decision, if there
+                       # was one, is S5a's.
+HOLD_IN_S = 0.20       # the library's boundary holds -- an event boundary, a
+HOLD_OUT_S = 0.20      # moving hold, and a guard against colliding with the
+                       # neighbouring clip. Newtson 1973; Zacks et al. 2007.
 
-SWEEP_TILT = 0.0       # neck stays VERTICAL for the whole sweep. The lean is
-                       # what makes the final "I'm looking at this one" read as
-                       # a change of posture; leaning the whole time spends that
-                       # signal on nothing.
-LEAN_TILT = -12.0      # final "craning forward to look" — matches S5_TRACK
-LEAN_NOD = 15.0        # head LIFTS at the lock. In Blender, positive nod = UP.
+# ---- LED ----
+LED_BASE = 1.0         # dim while travelling: the sweep is not an announcement
+LED_SHUTTER = 7.0      # short and bright, AFTER the head has stopped. The
+                       # clearest movement <=> result instance in the library --
+                       # it marks a frame actually being captured, and nothing
+                       # else in S4 flashes.
+LED_END = 0.8          # back to S5b's breath TROUGH. No closing rise: S4 has
+                       # captured, not chosen, and the light announces results.
 
-RETURN_SPEED = 60.0    # deg/s for the return to the richest station. Derived,
-                       # not a frame count: sweeping right-to-left means the
-                       # return can be anything from 35 to 145 deg depending on
-                       # which station won, and a fixed frame count would turn
-                       # the long ones into a lunge. Slower than STATION_SPEED
-                       # because this move is a decision being shown, not travel.
-OVERSHOOT_DEG = 1.5    # a little life, not a slam
 FPS = 30
+PEAK_FACTOR = 1.5      # Bezier easing peaks above a segment's average by roughly
+                       # this much. These keys are sparse rather than per-frame
+                       # sampled, so the check budgets the AVERAGE against
+                       # 200 / PEAK_FACTOR.
+# -----------------------------------------------------------
 
-# SIGN CONVENTION — two different frames, do not mix them up:
-#
-#   BLENDER (what you author here):  positive nod = head UP.
-#   SERVO UNITS (what the bus sees): higher unit    = head DOWN.
-#
-# They run opposite, which is exactly what INVERT["nod"] = True in
-# hardware/calibration.py exists to reconcile. Author against the RENDER, always
-# — the render is the thing being designed, and the servo frame is an
-# implementation detail that INVERT absorbs.
-#
-# Budget IN BLENDER SIGNS: nod may run **+26° (up) .. -47° (down)**. Note the
-# asymmetry is now on the up side, which is the side this clip uses — +15° here
-# leaves only 11° of headroom.
-#
-# LEAN_NOD note: tilt and nod compound, because the camera rides on the head at
-# the end of the neck. Leaning the neck forward by LEAN_TILT pitches the optical
-# axis down by roughly that much even with nod at zero — nod 0 keeps the head
-# level RELATIVE TO THE NECK, which is not the same as the camera being level.
-# Hence +15° up: it cancels the 12° of lean and leaves the gaze ~3° above
-# horizontal.
-#
-# It earns its keep twice. Geometrically it levels the view of the thing the
-# robot just chose. Socially, a head coming up at the end of a search is the
-# reading beat — "I have stopped looking FOR and started looking AT" — so the
-# handover into S5 is announced by posture instead of just happening.
-# --------------
+HOLD_IN_F = int(round(HOLD_IN_S * FPS))
+HOLD_OUT_F = int(round(HOLD_OUT_S * FPS))
+
+# ---- guard rails, read from the live calibration ----
+import os
+import sys
+
+REACH_PATH = ""        # set if the .blend lives outside the repo
+
+
+def _find_up(rel, starts, levels=8):
+    """Walk up, and look one step down into each level's subdirectories -- the
+    .blend files live in the local design folder and the generators in the repo,
+    which makes them siblings. See generate_s2_listen.py."""
+    for s in starts:
+        if not s:
+            continue
+        d = os.path.abspath(s)
+        for _ in range(levels):
+            p = os.path.join(d, rel)
+            if os.path.exists(p):
+                return p
+            try:
+                subs = sorted(os.listdir(d))
+            except OSError:
+                subs = []
+            for name in subs:
+                if name.startswith("."):
+                    continue
+                p = os.path.join(d, name, rel)
+                if os.path.exists(p):
+                    return p
+            up = os.path.dirname(d)
+            if up == d:
+                break
+            d = up
+    return None
+
+
+_starts = [os.path.dirname(bpy.data.filepath), os.getcwd()]
+_rp = REACH_PATH or (_find_up(os.path.join("motion", "blender", "reach.py"), _starts)
+                     or _find_up("reach.py", _starts))
+if not _rp or not os.path.exists(_rp):
+    raise RuntimeError(
+        "Cannot find motion/blender/reach.py.\n"
+        "  bpy.data.filepath = " + repr(bpy.data.filepath) + "\n"
+        "  cwd               = " + os.getcwd() + "\n"
+        "Save the .blend inside the repo, or set REACH_PATH above.")
+
+# Loaded by PATH, not by `import`: Blender caches modules for the whole session
+# and a guard must not go stale after a re-calibration.
+reach = type(sys)("reach")
+reach.__file__ = _rp
+with open(_rp) as _fh:
+    exec(compile(_fh.read(), _rp, "exec"), reach.__dict__)
+print("[s4] " + reach.summary())
+
+_step = 2.0 * SWEEP_DEG / (N_STATIONS - 1)
+if _step >= CAM_HFOV:
+    raise RuntimeError(f"station step {_step:.1f} deg is not under the "
+                       f"{CAM_HFOV:.0f} deg frame: the sweep would leave "
+                       f"unphotographed gaps. Raise N_STATIONS or lower "
+                       f"SWEEP_DEG.")
+_extremes = [("pan", SWEEP_DEG, "sweep start"), ("pan", -SWEEP_DEG, "sweep end"),
+             ("pan", RICHEST_DEG, "richest station"),
+             ("tilt", SWEEP_TILT, "sweeping"), ("nod", 0.0, "level")]
+for _j, _v, _w in _extremes:
+    reach.check(_j, _v, _w)
+reach.check_floor("pan", _step, "station step")
 
 pan = bpy.data.objects["pan_pivot"]
 tilt = bpy.data.objects["tilt_pivot"]
@@ -119,6 +200,7 @@ def key(obj, axis, frame, deg):
 
 
 led_strength = None
+led_color = None
 mat = bpy.data.materials.get("led_mat")
 if mat and mat.use_nodes:
     if mat.node_tree.animation_data:
@@ -126,7 +208,11 @@ if mat and mat.use_nodes:
     for n in mat.node_tree.nodes:
         if n.type == 'EMISSION':
             led_strength = n.inputs['Strength']
+            led_color = n.inputs['Color']
             break
+if led_color is not None:
+    led_color.default_value = (0.24, 0.59, 0.90, 1.0)     # cool: working
+    mat.diffuse_color = (0.24, 0.59, 0.90, 1.0)
 
 
 def key_led(frame, value):
@@ -135,97 +221,94 @@ def key_led(frame, value):
         led_strength.keyframe_insert(data_path="default_value", frame=frame)
 
 
-# Sweep RIGHT-to-LEFT, not left-to-right. The direction is arbitrary for
-# coverage, but not for the cycle: S2_LISTEN and S3_ACK both end at pan +60 --
-# the robot is facing the person who just spoke to it. Starting the sweep at -60
-# meant a 120 deg, ~1 s unauthored swing sat in the middle of the designed cycle,
-# inserted by the player because no clip covered it. Starting at +60 makes
-# S3 -> S4 seamless, and S4 still ends at RICHEST_DEG so S4 -> S5 stays seamless.
+def check_speed(deg, frames, what):
+    """Sparse keys, so budget the AVERAGE and let PEAK_FACTOR cover the easing."""
+    if frames <= 0:
+        raise RuntimeError(f"{what}: zero frames")
+    avg = abs(deg) / (frames / float(FPS))
+    if avg * PEAK_FACTOR > 200.0:
+        raise RuntimeError(f"{what} averages {avg:.0f} deg/s, peaking near "
+                           f"{avg * PEAK_FACTOR:.0f} -- over the 200 deg/s "
+                           f"ceiling. Give it more frames.")
+    return frames
+
+
+# Sweep RIGHT-to-LEFT. Arbitrary for coverage, not for the cycle: S3 leaves the
+# robot facing the person at pan +50, so starting at +SWEEP keeps S3 -> S4 short.
 start_deg, end_deg = SWEEP_DEG, -SWEEP_DEG
-step = (end_deg - start_deg) / (N_STATIONS - 1)          # negative: sweeps left
-MOVE_F = max(6, round(abs(step) / STATION_SPEED * FPS))
+step = (end_deg - start_deg) / (N_STATIONS - 1)
+MOVE_F = check_speed(step, max(6, round(abs(step) / STATION_SPEED * FPS)),
+                     "station travel")
 
 f = 1
+key(pan, "z", f, start_deg)
 key(tilt, "x", f, SWEEP_TILT)
 key(nod, "x", f, 0.0)
-key_led(f, 1.0)
+key_led(f, LED_BASE)
+
+# Opening hold. Entry from S5 is an un-crane of 12 deg tilt / 15 deg nod that no
+# clip contains -- a TRANSITION, which by the library rule carries no expressive
+# content and travels between two held poses. This hold is what keeps it from
+# blurring into the first sweep leg.
+f += HOLD_IN_F
+key(pan, "z", f, start_deg)
+key(tilt, "x", f, SWEEP_TILT)
+key(nod, "x", f, 0.0)
 
 for i in range(N_STATIONS):
     a = start_deg + i * step
     key(pan, "z", f, a)                       # arrive
     key(pan, "z", f + DWELL_F, a)             # and stay put for the whole dwell
 
-    # Shutter fires only after the head has stopped moving. Short and bright, so
-    # it reads as a discrete event rather than a pulse.
+    # Shutter fires only AFTER the head has stopped moving.
     s = f + SETTLE_F
-    key_led(s - 1, 1.0)
-    key_led(s + 1, 7.0)
-    key_led(s + 4, 1.0)
+    key_led(s - 1, LED_BASE)
+    key_led(s + 1, LED_SHUTTER)
+    key_led(s + 4, LED_BASE)
 
     f += DWELL_F + MOVE_F
 
-f -= MOVE_F                                    # no travel after the last station
+f -= MOVE_F                                   # no travel after the last station
 
-# nod is pinned flat for the whole sweep. Keying it explicitly at the end as
-# well as the start stops Bezier handles from drifting it in between.
+# nod is pinned flat for the whole sweep; keying it at the end as well as the
+# start stops Bezier handles from drifting it in between.
 key(nod, "x", f, 0.0)
 key(tilt, "x", f, SWEEP_TILT)
 
-# --- return to the richest station, then crane in ---
-RETURN_F = max(8, round(abs(end_deg - RICHEST_DEG) / RETURN_SPEED * FPS))
+# --- return to the chosen station, LEVEL. No crane: that is S5a's, if it runs.
+RETURN_F = check_speed(end_deg - RICHEST_DEG,
+                       max(8, round(abs(end_deg - RICHEST_DEG) / RETURN_SPEED * FPS)),
+                       "return")
 f_ret = f + RETURN_F
-approach = RICHEST_DEG + (OVERSHOOT_DEG if RICHEST_DEG < end_deg else -OVERSHOOT_DEG)
-key(pan, "z", f_ret, approach)
-key(pan, "z", f_ret + 8, RICHEST_DEG)          # ease onto it
+key(pan, "z", f_ret, RICHEST_DEG)
+key(tilt, "x", f_ret, SWEEP_TILT)
+key(nod, "x", f_ret, 0.0)
+key_led(f_ret, LED_END)
 
-key(tilt, "x", f_ret, SWEEP_TILT)              # neck starts leaning as it arrives
-key(tilt, "x", f_ret + 12, LEAN_TILT)          # eased, no overshoot
-
-# The head lift trails the neck lean rather than moving with it. Simultaneous
-# reads as one mechanical pose change; offset reads as two beats -- "I've come
-# to this one", then "and now I'm looking at it". The second beat is the one
-# that has to be legible, so it gets to happen on its own.
-key(nod, "x", f_ret + 10, 0.0)
-key(nod, "x", f_ret + 24, LEAN_NOD)
-
-key_led(f_ret, 1.0)
-key_led(f_ret + 24, 3.0)                       # steady on as the head comes up
-
-end = f_ret + 34
+# Closing hold. S4 hands to S5a (authored arrival) or straight to S5b (a plain
+# transition) -- both start from this level pose at the chosen pan.
+end = f_ret + HOLD_OUT_F
 key(pan, "z", end, RICHEST_DEG)
-key(tilt, "x", end, LEAN_TILT)
-key(nod, "x", end, LEAN_NOD)
-key_led(end, 3.0)
+key(tilt, "x", end, SWEEP_TILT)
+key(nod, "x", end, 0.0)
+key_led(end, LED_END)
 
 bpy.context.scene.frame_start = 1
 bpy.context.scene.frame_end = end
 
-# --- sanity check before you even export ---
-# Bezier easing peaks at roughly 2x a segment's average rate, so check the
-# average against half the ceiling. Catching this here beats finding it in
-# export_clip.py, and finding it there beats finding it on the servo.
-if abs(step) >= CAM_HFOV:
-    raise RuntimeError(
-        f"step is {abs(step):.0f}° but the camera only sees {CAM_HFOV:.0f}° "
-        f"horizontally -- the sweep would leave gaps. Raise N_STATIONS to at "
-        f"least {int(2 * SWEEP_DEG // CAM_HFOV) + 2}.")
-
-seg_avg = abs(step) / (MOVE_F / FPS)
-ret_avg = abs(end_deg - RICHEST_DEG) / (RETURN_F / FPS)
-peak_est = 2.0 * max(seg_avg, ret_avg)
-warn = "  !! over 200 deg/s — raise MOVE_F / RETURN_F" if peak_est > 200 else ""
-
-msg = (f"S4 v2: {N_STATIONS} stations x {step:.0f}° over ±{SWEEP_DEG:.0f}°, "
-       f"neck vertical during sweep, lock at {RICHEST_DEG:.0f}°/{LEAN_TILT:.0f}°"
-       f"/{LEAN_NOD:.0f}° (head up), "
-       f"{end}f ({end / FPS:.1f}s), est peak {peak_est:.0f} deg/s{warn}")
+covered = 2 * SWEEP_DEG + CAM_HFOV
+msg = (f"S4 sweep: {N_STATIONS} stations {start_deg:+.0f}->{end_deg:+.0f} "
+       f"(step {abs(step):.1f} deg, covers {covered:.0f} deg), return LEVEL to "
+       f"{RICHEST_DEG:+.0f}; {end}f ({end / FPS:.2f}s)")
 print(msg)
 
 
 def draw(self, context):
     self.layout.label(text=msg)
-    self.layout.label(text="Then: save, run export_clip.py")
+    self.layout.label(text="S4 only ACQUIRES. Arriving at the thing is S5a,")
+    self.layout.label(text="and S5a only runs if the target actually changed.")
+    self.layout.label(text=f"Covers {covered:.0f} deg = the forward 180.")
+    self.layout.label(text="Ends LEVEL at the chosen pan. Then: save, export_clip.py")
 
 
-bpy.context.window_manager.popup_menu(
-    draw, title="S4 sweep v2" if not warn else "S4 sweep v2 — TOO FAST", icon='INFO')
+bpy.context.window_manager.popup_menu(draw, title="S4 sweep", icon='INFO')

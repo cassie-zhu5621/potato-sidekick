@@ -28,12 +28,12 @@ from robot import calibration as cal
 
 AXES = ("pan", "tilt", "nod")
 UNITS_PER_DEG = 1023 / 300.0
-LOOP_CLIPS = {"S1_IDLE", "S5_TRACK", "S8_ERROR"}
+LOOP_CLIPS = {"S1_IDLE", "S5B_TRACK", "S8_ERROR"}
 # clip -> clip: the first must end where the second begins
 HANDOVERS = [("S1_IDLE", "S2_LISTEN"), ("S2_LISTEN", "S3_ACK"),
-             ("S3_ACK", "S4_PLAN"), ("S4_PLAN", "S5_TRACK"),
-             ("S5_TRACK", "S6_FINETUNE"), ("S6_FINETUNE", "S5_TRACK"),
-             ("S5_TRACK", "S7a"), ("S7a", "S7b")]
+             ("S3_ACK", "S4_PLAN"), ("S4_PLAN", "S5B_TRACK"),
+             ("S5B_TRACK", "S6_FINETUNE"), ("S6_FINETUNE", "S5B_TRACK"),
+             ("S5B_TRACK", "S7a"), ("S7a", "S7b")]
 
 # Not every pair needs to match: the state machine eases between states. What
 # matters is how FAR it has to ease, because a fixed transition time turns a
@@ -109,6 +109,65 @@ def check(path, ceiling):
                 print(f"  !! loop seam: {a} starts {a0:+.1f} ends {a1:+.1f}")
                 problems.append(f"{a} loop seam {a0:+.1f} -> {a1:+.1f}")
     return name, rows, problems
+
+
+def floor_report(clips):
+    """Which authored DETAILS are below what the servos can produce.
+
+    Range is not the question -- a 60 deg pan obviously moves. The question is
+    the small stuff: overshoot, recoil, follow-through, counter-motion. Those are
+    smaller than the main action by construction, which is what makes them
+    secondary, and on this build that is exactly what puts them under the floor.
+    A clip can therefore pass every limits check and still lose the animation
+    principles it was built on.
+    """
+    try:
+        from robot.calibration import FLOORS
+    except ImportError:
+        print("\n(no FLOORS in calibration.py -- run robot.tools.deadband_probe)")
+        return
+    U = 1023 / 300.0
+
+    def features(v, eps=0.05):
+        ex, d, last, peak = [], 0, v[0], v[0]
+        for x in v[1:]:
+            nd = 0 if abs(x - last) < eps else (1 if x > last else -1)
+            if nd and d and nd != d:
+                ex.append(abs(last - peak)); peak = last
+            if nd:
+                d = nd
+            last = x
+        ex.append(abs(last - peak))
+        return [e for e in ex if e > eps]
+
+    print("\n--- against the measured servo floors ---")
+    print("  " + " | ".join(f"{j} {FLOORS[j]} u = {FLOORS[j]/U:.2f} deg" for j in FLOORS))
+    any_lost = False
+    for name, rows in clips:
+        for j in ("pan", "tilt", "nod"):
+            key = f"{j}_deg"
+            if key not in rows[0]:
+                continue
+            v = [float(r[key]) for r in rows]
+            if max(v) - min(v) < 0.05:
+                continue
+            ex = features(v)
+            if not ex:
+                continue
+            fl = FLOORS.get(j, 0)
+            lost = [e for e in ex if e * U < fl]
+            if (max(v) - min(v)) * U < fl:
+                any_lost = True
+                print(f"  {name:13} {j:5} WHOLE CHANNEL below the floor -- it will not move")
+            elif lost:
+                any_lost = True
+                print(f"  {name:13} {j:5} {len(lost)}/{len(ex)} features below the floor, "
+                      f"smallest {min(ex):.2f} deg ({min(ex)*U:.1f} u) -- these are the "
+                      f"accents, and they will simply not happen")
+    if not any_lost:
+        print("  nothing below the floor.")
+    print("  Rule: author any secondary action at >= 2x the joint floor, or it is")
+    print("  flattened rather than performed.")
 
 
 def main():
@@ -205,6 +264,8 @@ def main():
               f"{TRANSITION_MS:.0f} ms")
         print(f"       is fine between neighbouring poses and a lurch across the "
               f"library.")
+
+    floor_report(sorted(clips.items()))
 
     print("\n--- summary ---")
     if not all_problems:

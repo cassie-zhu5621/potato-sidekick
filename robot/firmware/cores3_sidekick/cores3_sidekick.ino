@@ -95,11 +95,31 @@ static const int SCREEN_W = 320, SCREEN_H = 240;
   void antennaInit() {}
   void setAntennaHue(int r, int g, int b) { aR = r; aG = g; aB = b; }
   void setAntennaLevel(int v) { aExt = constrain(v, 0, 255); aExtAt = millis(); }
+  // The fallback breath must BE S1_IDLE's envelope, not a second, louder one.
+  // It stands in for the idle state, so anything else makes the handover between
+  // "laptop streaming" and "board on its own" visible -- and it was: the old
+  // fallback ran 0.25..0.80 (64..204 of 255) while S1's authored envelope is
+  // 0.8..2.5 on the generator's 0-8 Strength scale, i.e. 26..80. The board's
+  // default was two and a half times brighter and wider than the design, so the
+  // moment a clip took over the antenna got DIMMER. It read as the authored
+  // envelope not working at all.
+  //
+  // These two numbers are tied to generate_s1_idle.py's LED_LO / LED_HI and
+  // export_clip.py's LED_FULL = 8.0:  0.8/8 = 0.10,  2.5/8 = 0.31.
+  // If S1's LED range changes, change these with it.
+  static const float FB_LO = 0.0375f;         // = S1 LED_LO 0.30 / LED_FULL 8.0
+  static const float FB_SPAN = 0.275f;        // up to S1 LED_HI 2.5 / 8.0 = 0.3125
+  static const float FB_MS = 800.0f;          // 2*pi*800 = 5.0 s, S1's mean breath
+  // The floor dropped from 0.10 to 0.0375 because the breath was not reading.
+  // PWM is linear in luminance and perceived brightness goes roughly as L^0.43,
+  // so 26..80 of 255 is only a 1.6x PERCEIVED swing. 10..80 makes it 2.5x for
+  // the same peak. Lower than this starts to look like a fault rather than idle.
+
   void antennaTick() {
     uint32_t m = millis();
     float s = (aExt >= 0 && (m - aExtAt) < A_EXT_TIMEOUT)
-              ? aExt / 255.0f                                    // clip-driven
-              : 0.25f + 0.55f * (0.5f + 0.5f * sinf(m / 950.0f)); // fallback breath
+              ? aExt / 255.0f                                     // clip-driven
+              : FB_LO + FB_SPAN * (0.5f + 0.5f * sinf(m / FB_MS)); // = S1 idle
     leds.setColorRGB(0, (uint8_t)(aR * s), (uint8_t)(aG * s), (uint8_t)(aB * s));
   }
 #else

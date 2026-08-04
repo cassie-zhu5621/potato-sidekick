@@ -227,7 +227,18 @@ def list_cams(n=6):
 # perception hook -- the whole autonomous half lives behind this signature
 # --------------------------------------------------------------------------- #
 def perceive(frame, snap, ctx):
-    """Called with a SETTLED frame. Return a state name to request, or None.
+    """Called with a SETTLED frame. Return an EVENT NAME, or None.
+
+    An event, not a state -- "finding", not "S7a". The rules for what an event
+    means live in session_flow.py, which is the design contribution; perception
+    reports, the flow decides. The events it may emit are the same vocabulary
+    every other device uses:
+
+        "finding"          a watch entry was satisfied  -> S7a, counter, story
+        "tap"              the body was touched         -> S6 (already wired)
+        "transcript:<txt>" (STT owns this one)
+
+    Anything else is ignored with a log line rather than crashing the session.
 
     Deliberately a stub. Returning None forever is a valid, running system: the
     researcher drives, the motion library gets exercised, the study can happen.
@@ -568,6 +579,25 @@ def main():
                 print(f"[aim] richest pan {meta['richest_pan']:+d} "
                       f"(score {meta['richest_score']}) -- taking over there")
                 player.set_pan_deg(float(meta["richest_pan"]))
+                # DID THE TARGET CHANGE? That is the whole question S5a exists
+                # to answer, and only the planner can answer it -- the sweep is
+                # additive, so most re-plans re-choose what was already being
+                # watched. Changed: arm S5A_SETTLE, and the crane onto the thing
+                # is an AUTHORED BEAT ("I have come to this one"). Unchanged: say
+                # nothing, S4's `then` falls through to S5B, and the same crane
+                # is an ordinary transition carrying no claim.
+                #
+                # Same joints, same endpoints, two different claims -- and what
+                # separates them is only whether anybody authored the move. See
+                # S4_S5_DESIGN.md sec 3.05.
+                new_pan = float(meta["richest_pan"])
+                prev = ctxd.get("aimed_pan")
+                if prev is None or abs(new_pan - prev) > ST.AIM_CHANGED_DEG:
+                    player.arm_next("S5A_SETTLE")
+                    print(f"[aim] target CHANGED "
+                          f"({'first' if prev is None else f'{prev:+.0f}'}"
+                          f" -> {new_pan:+.0f}) -- S5a will announce the arrival")
+                ctxd["aimed_pan"] = new_pan
         except Exception as e:
             # A failed plan must NOT strand the robot: S4/S5 still run, the
             # researcher can see the failure in the UI and retype or stop.
@@ -716,7 +746,11 @@ def main():
             # judgement. CV starts once there is a spec to watch, i.e. from S5 on.
             frame = None
             fired = []
-            watching = snap["state"] in ("S5_TRACK", "S6_FINETUNE", "S7a", "S7b")
+            # From states.py, NOT a literal: this list had "S5_TRACK" in it,
+            # which is the CLIP name. The state is S5B_TRACK, so the test was
+            # false forever and CV never ran in the state whose whole job is
+            # watching. Nothing raised -- a wrong string is just never equal.
+            watching = snap["state"] in ST.WATCHING
             if not watching:
                 shown = None          # do not carry a watch overlay into the sweep
             if cam is not None:
@@ -741,9 +775,18 @@ def main():
                         # skeleton lag behind the person -- the boxes were never
                         # late, they were just painted on somebody else's frame.
                         shown = view.draw(frame.copy())
-                    want = perceive(frame, snap, ctx)
-                    if want:
-                        player.request(want)
+                    # An EVENT into the flow, never player.request(). Perception
+                    # reports what it saw; SessionFlow decides what that means.
+                    # Requesting a state here bypassed the flow entirely: its
+                    # self.state would silently disagree with the player's, the
+                    # noticed counter would not increment, the CoreS3 screen would
+                    # not change and no story would be opened -- a finding that
+                    # moved the robot and left no record. This is also the exact
+                    # boundary the perception work has to respect, so the loop
+                    # should not be demonstrating the violation.
+                    ev = perceive(frame, snap, ctx)
+                    if ev:
+                        ui_events.append(ev)
 
             # A watch entry firing IS the finding. This is what the `f` key was
             # standing in for; `f` still works, because a detector that misses

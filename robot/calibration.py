@@ -9,19 +9,19 @@ can jam.
 UNCALIBRATED = set()
 
 CENTRE = {
-    "pan": 251,
-    "tilt": 492,
-    "nod": 686,
+    "pan": 361,
+    "tilt": 478,
+    "nod": 652,
 }
 LIMITS = {
-    "pan": (80, 251),
-    "tilt": (401, 621),
-    "nod": (470, 750),
+    "pan": (123, 591),
+    "tilt": (382, 637),
+    "nod": (414, 855),
 }
 OFFSET = {
-    "pan": -261,
-    "tilt": -20,
-    "nod": 174,
+    "pan": -151,
+    "tilt": -34,
+    "nod": 140,
 }
 # INVERT is carried over, never measured here: which way a jog
 # key moves a joint does NOT tell you whether a clip plays
@@ -31,4 +31,11 @@ INVERT = {
     "pan": True,
     "tilt": True,
     "nod": True,
+}
+
+# Carried over from deadband_probe -- not measured by jog.py.
+FLOORS = {
+    "pan": 6,
+    "tilt": 7,
+    "nod": 12,
 }
