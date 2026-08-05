@@ -59,8 +59,10 @@
 #   the return is more than twice as long and eased.
 #
 #   The toss is shared between nod and tilt: the head flicks up while the neck
-#   straightens slightly under it. That reads as the whole creature lifting
-#   rather than a head hinging, and it keeps nod clear of its ceiling.
+#   ROCKS FORWARD under it (v5; it used to straighten up alongside it). That
+#   reads as the whole creature leaning in to call rather than a head hinging,
+#   it keeps nod clear of its ceiling, and because the two are equal and
+#   opposite the gaze stays on the face for the whole stroke.
 #
 # ! STILL OPEN: the two-point runtime remap (S7_DESIGN.md Sec.5) is NOT
 #   implemented, so on hardware this loop alternates between the TEMPLATE angles
@@ -96,13 +98,74 @@ OBJECT_ELEV = -10.0
 OBJECT_NOD = OBJECT_ELEV - LEAN_DEG   # cancel the lean's pitch, THEN aim
 
 # ---- the toss (USER leg only) ----
-THROW_NOD = 10.0      # head flicks UP this far (positive = up in Blender)
-THROW_TILT = 8.0      # neck straightens up under it, same direction
+# !! NOT EXPORTED YET (2026-08-05). motion/clips/S7b.csv is still the v4 build:
+#    tilt runs -25..+8, i.e. the OLD backward toss, and the gaze reaches +18 deg
+#    at the top of the summons. Everything from here down describes what this
+#    file WOULD produce, not what the robot currently plays. Deliberate -- the
+#    change is cosmetic and the session was spent verifying behaviour -- but a
+#    generator that disagrees with its own clip is exactly the kind of silent
+#    mismatch this project keeps paying for, so it says so out loud.
+#    Re-run in S7b.blend and export to clear this note.
+THROW_NOD = 14.0      # head flicks UP this far (positive = up in Blender).
+                      # LOCKED to -THROW_TILT by the gaze guard below; the two
+                      # are one gesture and cannot be tuned apart.
+THROW_TILT = -14.0    # v5: the neck now ROCKS FORWARD under the lifting head
+                      # instead of straightening up with it. WAS +8.
+                      #
+                      # WHY, and why this is not the social lean the object leg
+                      # is careful to keep for itself. FORM_DECISION rules out
+                      # leaning into a person's space as a HELD POSTURE. This is
+                      # a stroke: five frames out, eleven back, and the user
+                      # leg's held pose is still tilt 0 / nod 0. A gesture that
+                      # returns is not a posture, and -22 remains the only
+                      # sustained lean in the vocabulary.
+                      #
+                      # The up-toss was the AUTHORED "come here" and it is not
+                      # what the body reads as. Lifting the head while the neck
+                      # also straightens moves the whole creature AWAY from the
+                      # person it is summoning; the accent lands, but it lands
+                      # in retreat. Rocking forward puts the body behind the
+                      # summons.
+                      #
+                      # -10 pairs with THROW_NOD +10 so the gaze angle
+                      # (tilt + nod) is 0 at rest, 0 at the top of the toss, and
+                      # 0 on the way back: THE ROBOT ROCKS TOWARD YOU WITHOUT
+                      # EVER TAKING ITS EYES OFF YOUR FACE. Eye contact is what
+                      # makes a beckon a summons rather than a twitch.
+                      #
+                      # HOW DEEP THIS CAN GO IS SET BY RISE_F, NOT BY TASTE. The
+                      # stroke has to cross it in RISE_F frames under PEAK_DPS:
+                      #
+                      #     max|THROW_TILT| = PEAK_DPS * (RISE_F/FPS) / 1.875
+                      #                     = 21.3 deg per RISE_F frame @30fps
+                      #
+                      #     RISE_F  5 -> 10.7    7 -> 14.9    9 -> 19.2
+                      #
+                      # So a deeper rock is bought with frames, and the frames
+                      # come out of the asymmetry that makes this read as "come
+                      # here" rather than "yes" -- FALL_F has to grow with it to
+                      # hold the ratio near 2.2. v5 takes RISE_F 5 -> 7 and
+                      # FALL_F 11 -> 15: ratio 2.14, 14 deg of rock, and 0.2 s
+                      # added to the cycle.
+                      #
+                      # -18 (RISE_F 9) was the next rung and is rejected twice
+                      # over: a 0.3 s "flick" is no longer a flick, and -18 sits
+                      # close enough to the object leg's -22 that the two poles
+                      # of the alternation stop being two poles. THE CONTRAST IS
+                      # THE GESTURE; a deeper user lean past this point buys
+                      # emphasis by spending the thing being emphasised.
 
 # ---- rhythm: the asymmetry IS the gesture ----
-RISE_F = 5            # sharp. This is the stroke that carries the meaning.
+RISE_F = 7            # sharp. This is the stroke that carries the meaning.
+                      # WAS 5. Raised only to buy depth for THROW_TILT -- see the
+                      # ceiling formula there. It is the shortest beat that
+                      # reaches -14 without passing PEAK_DPS.
 TOP_F = 5             # hang at the top -- the "well? come on" beat
-FALL_F = 11           # slow, eased return. Must be clearly longer than RISE_F.
+FALL_F = 15           # slow, eased return. Must be clearly longer than RISE_F.
+                      # WAS 11, with RISE_F 5, for a ratio of 2.2. Grown with
+                      # RISE_F to keep 2.14: the ratio is what says "come here"
+                      # instead of "yes", so it is not free to drift when the
+                      # rise changes.
 HOLD_USER_F = 6       # settle on the face after the toss, before turning back
 HOLD_OBJ_F = 14       # the held fixation. Must be >= S7a's hold-out, or the
                       # handover reads as the robot losing interest the moment
@@ -201,6 +264,18 @@ if abs((LEAN_DEG + OBJECT_NOD) - OBJECT_ELEV) > 0.01:
     raise RuntimeError(
         f"the object leg does not aim at the object: gaze "
         f"{LEAN_DEG + OBJECT_NOD:+.1f} vs OBJECT_ELEV {OBJECT_ELEV:+.1f}.")
+if abs(THROW_TILT + THROW_NOD) > 0.01:
+    raise RuntimeError(
+        f"the toss does not hold the gaze: tilt+nod at the top is "
+        f"{THROW_TILT + THROW_NOD:+.1f}, not 0. The user leg rests level, so a "
+        f"non-zero peak means the robot looks away from the face at the exact "
+        f"moment it is summoning -- which is the difference between a beckon "
+        f"and a flinch. Set THROW_NOD = -THROW_TILT.")
+if THROW_TILT > 0:
+    raise RuntimeError(
+        f"THROW_TILT is {THROW_TILT:+.1f}: the neck rocks BACK on the toss, "
+        f"moving the robot away from the person it is calling. v5 made this "
+        f"forward on purpose -- see the note at the constant.")
 if LEAN_DEG != -22.0:
     raise RuntimeError(
         f"LEAN_DEG is {LEAN_DEG:+.1f} here but generate_s7_found.py authors "
@@ -264,9 +339,20 @@ for _w, _deg, _f in (("the crossing", CROSS_DEG, CROSS_F),
                      ("head down onto the object", COUNTER - OBJECT_NOD,
                       SETTLE_OBJ_F)):
     _pk = abs(_deg) / (_f / float(FPS)) * _FAC
-    if _pk > 200.0:
-        raise RuntimeError(f"{_w} peaks at {_pk:.0f} deg/s, over the 200 deg/s "
-                           f"ceiling.")
+    # WAS 200, which left a hole exactly where this file needs a guard.
+    # `frames_for()` SIZES a move so its peak stays under PEAK_DPS (120), but the
+    # rhythm constants -- RISE_F, TOP_F, FALL_F, SETTLE_OBJ_S -- are hand-set and
+    # never went through it. So a hand-set beat was only ever checked against
+    # 200, and anything between 120 and 200 passed while quietly breaking the
+    # policy the computed moves obey. THROW_TILT = -12 is 135 and is precisely
+    # that case. Every current value is at or under 119.5, so this costs nothing
+    # today and catches the next edit.
+    if _pk > PEAK_DPS:
+        raise RuntimeError(
+            f"{_w} peaks at {_pk:.0f} deg/s, over PEAK_DPS {PEAK_DPS:.0f}. "
+            f"Either slow the beat or shorten the excursion -- the servo will "
+            f"not refuse, it will simply arrive late and short, which reads as "
+            f"a weak gesture rather than as an error.")
 
 pan = bpy.data.objects["pan_pivot"]
 tilt = bpy.data.objects["tilt_pivot"]

@@ -21,7 +21,7 @@ LIMITS = {
 OFFSET = {
     "pan": -151,
     "tilt": -34,
-    "nod": 140,
+    "nod": 115,
 }
 # INVERT is carried over, never measured here: which way a jog
 # key moves a joint does NOT tell you whether a clip plays

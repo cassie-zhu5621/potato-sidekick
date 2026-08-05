@@ -71,7 +71,7 @@ N_STATIONS = 5         # COVERAGE constraint, not taste: the step must stay unde
                        #   N=5  step 30.0  48% overlap   <- used
                        # Beyond coverage it buys how deliberate the scan LOOKS,
                        # and how finely "richest position" resolves (= one step).
-RICHEST_DEG = 25.0     # demo value; at runtime from the VLM's richest_frame_index.
+RICHEST_DEG = -25.0     # demo value; at runtime from the VLM's richest_frame_index.
                        # ALSO S5B_TRACK's HOLD_PAN -- S4 hands straight into S5.
 
 # ---- pose ----
@@ -233,9 +233,20 @@ def check_speed(deg, frames, what):
     return frames
 
 
-# Sweep RIGHT-to-LEFT. Arbitrary for coverage, not for the cycle: S3 leaves the
-# robot facing the person at pan +50, so starting at +SWEEP keeps S3 -> S4 short.
-start_deg, end_deg = SWEEP_DEG, -SWEEP_DEG
+# Sweep FROM THE PERSON'S SIDE OUTWARD. Arbitrary for coverage, not for the
+# cycle: S3 leaves the robot facing the person, so the sweep starts on that side
+# and S3 -> S4 stays short.
+#
+# WAS +SWEEP -> -SWEEP, with a comment saying "S3 leaves the robot facing the
+# person at pan +50". Then the study layout put the participant on the robot's
+# LEFT -- they set it down on their own left, so the person sits near -30 -- and
+# that comment silently became the reason for the wrong direction. S3 ended at
+# -30 while S4 still opened at +60: 90 degrees of unauthored travel between two
+# clips that used to meet exactly.
+#
+# Starting on the person's side is also the better reading: "I will look, from
+# where you are, outward" rather than beginning with its back to them.
+start_deg, end_deg = -SWEEP_DEG, SWEEP_DEG
 step = (end_deg - start_deg) / (N_STATIONS - 1)
 MOVE_F = check_speed(step, max(6, round(abs(step) / STATION_SPEED * FPS)),
                      "station travel")

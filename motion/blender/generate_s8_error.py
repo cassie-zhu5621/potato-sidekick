@@ -76,14 +76,51 @@ DROOP_NOD = -8.0       # head down -- "at a loss". Gaze sits at -13, which is
                        # and from S7's aimed crane (gaze -10 with a deep lean).
                        # NEGATIVE IS DOWN in Blender for nod.
 
-# ---- LED: amber, accented on every swing extreme, decaying with the motion ----
-LED_LO = 0.9
-LED_HI = 4.5           # 143/255 -- deliberately UNDER the firmware's 150 flash
-                       # threshold, and under S7's 8.0. This is a problem being
-                       # reported, not an invitation.
+# ---- LED: accented on every swing extreme, decaying with the motion ----
+#
+# v3 (2026-08-05). THE ENVELOPE CARRIED THE BUG v2 REMOVED FROM THE MOTION.
+#
+# Read the note at the top again: v1's droop "RECOVERED TO LEVEL by the last
+# frame, so the loop would be seamless... the robot picked its head back up
+# fifteen times a minute." The pose was fixed by holding it. The LIGHT was not.
+# It still ran LED_LO -> LED_HI -> LED_LO every pass and closed on LED_LO to be
+# loop-safe, so the antenna re-inflated every four seconds exactly as the neck
+# used to. A pulse that re-asserts on a fixed period is an ALARM RHYTHM: it is
+# the light saying "still here, still here", which is the one thing a state
+# meaning "I have run out of ideas" must not say.
+#
+# AND IT WAS THE BRIGHTEST THING IN THE LIBRARY AFTER S7. Measured out of the
+# exports: S8 peaked at 143 while S5B_TRACK -- the robot working normally --
+# peaks at 96. Being stuck outshone being useful.
+#
+# The beats stay: tying them to the swing extremes is right, and the argument
+# below (the light is the same effort as the movement) is the reason. What
+# changes is the CEILING. The whole envelope now sits under S5b's, so the light
+# still fades with each swing but never climbs back to a level that competes
+# with working. Embers, not a beacon.
+LED_LO = 0.4           # 13/255. Was 0.9 (29), then 0.6 (19).
+LED_HI = 1.6           # 51/255. WAS 4.5 = 143, i.e. 1.5x S5B_TRACK's peak of 96.
+                       #
+                       # 2.2 (70) was the first cut and it was not enough: S1's
+                       # breath runs 10..80, so at 19..70 the two states covered
+                       # almost the same band and S8 only looked dimmer at the
+                       # top of a breath. "Dimmer than idle" has to hold at every
+                       # instant, not on average -- a participant sees one moment,
+                       # not a distribution.
+                       #
+                       # At 13..51 the whole band sits under S1's 80 peak and its
+                       # own peak is below S1's mid-breath. S8 is now unambiguously
+                       # the faintest thing the robot does, which is what "the
+                       # light going out of it" has to mean in numbers.
+                       # Far under S7's 255 and the firmware's 150 flash threshold:
+                       # a problem being reported, not an invitation.
 LED_LEAD_F = 4         # dark just before each beat, so it punches
 LED_TAIL_F = 5
-LED_AMBER = (0.94, 0.55, 0.08, 1.0)
+# Colour is NOT set from this file any more -- the antenna hue comes from
+# states.py (`spent`) via EVT HUE. This value only tints the Blender preview, so
+# it is kept in sync by hand: see robot_motion/LED_COLOR_DESIGN.md. Amber was
+# the old ALARM colour and is wrong for the same reason the pulse was.
+LED_AMBER = (0.70, 0.75, 1.00, 1.0)   # = SPENT, for the render only
 
 # ---- the S6 separation, guarded ----
 S6_SHAKE_HZ = 2.4      # = generate_s6_finetune.py SHAKE_HZ

@@ -32,12 +32,13 @@
  *                          for accents synced to the motion. Falls back to the
  *                          local breath after 500 ms of silence, so a stalled
  *                          link is not a frozen LED.
- *     EVT HUE <WARM|COOL|RED|GREEN|ALARM>   colour = which KIND of state
+ *     EVT HUE <WARM|COOL|RED|SUMMON|SPENT>  colour = which KIND of state
+ *       (GREEN/ALARM still accepted -- old names, new colours)
  *     EVT SFX <name>       curious ack shutter puzzled excited lost | NONE
  *     EVT LEVEL <0-100>    mic level for the recording bar
  *     EVT VOL <0-255>      speaker volume; 0 for a silent run
  *     EVT REST             end of a run: go quiet, back to idle + warm breath
- *     EVT PING             -> `IN PONG cores3_sidekick v2`
+ *     EVT PING             -> `IN PONG cores3_sidekick v4`
  *
  *   CoreS3 -> Laptop
  *     IN PTT_DOWN / IN PTT_UP     the green button, held
@@ -47,6 +48,16 @@
  *     IN PONG ...                 identity, on request
  *
  * Board: M5CoreS3  ·  Lib: M5Unified  ·  "USB CDC On Boot: Enabled"
+ *
+ * BUMP THE VERSION STRING FOR ANY CHANGE THE LAPTOP CANNOT OBSERVE -- a new
+ * command, a changed colour, a moved button. Not only for the protocol.
+ *
+ * v3 was cut when SUMMON and SPENT were ADDED. SPENT's value then changed from
+ * blue to amber inside v3, and because the string did not move, cores3_link's
+ * version check reported a match against a board still carrying the blue. The
+ * check was built to answer "did I reflash" and it answered "yes" wrongly,
+ * which is worse than not having it. Keep it in step with cores3_link.py's
+ * FIRMWARE_V.
  */
 
 #include <M5Unified.h>
@@ -81,7 +92,7 @@ static const int SCREEN_W = 320, SCREEN_H = 240;
   #include <ChainableLED.h>
   static const int LED_CLK = 8, LED_DATA = 9;
   ChainableLED leds(LED_CLK, LED_DATA, 1);
-  int aR = 255, aG = 150, aB = 60;              // warm at boot
+  int aR = 255, aG = 242, aB = 224;             // warm at boot (= HUE WARM)
 
   // The clip streams the LEVEL; the colour comes from the state. Local breathing
   // is only a FALLBACK -- if no level has arrived for A_EXT_TIMEOUT the board
@@ -92,7 +103,33 @@ static const int SCREEN_W = 320, SCREEN_H = 240;
   uint32_t aExtAt = 0;
   const uint32_t A_EXT_TIMEOUT = 500;
 
-  void antennaInit() { leds.init(); }
+  // DO WHAT init() DOES, RATHER THAN CALLING IT.
+  //
+  // "ChainableLED has no member named 'init'" is a LIBRARY-VERSION error, not a
+  // sketch error: it appears the first time this file is compiled on a machine
+  // whose ChainableLED differs from the one that last flashed the board.
+  // pjpmarques/ChainableLED exposes init(); several forks do the same work in
+  // the constructor and never declare it. Both are correct libraries, and
+  // hard-coding either choice makes the board flashable from exactly one desk.
+  //
+  // The obvious fix -- an overload pair on decltype(l.init()) -- CANNOT BE USED
+  // HERE. See the note at the top of this file: the .ino preprocessor generates
+  // a prototype for every function in the sketch, and it drops the
+  // `template <typename T>` line when it does, so the injected prototype
+  // references an undeclared T. That surfaces as "'l' was not declared in this
+  // scope" pointing at a template that is perfectly valid C++. NO TEMPLATE
+  // DEFINED IN A .ino SURVIVES THIS. Put one in a .h beside the sketch if it is
+  // ever genuinely needed.
+  //
+  // So: no detection at all. init() only sets the two pins to OUTPUT and blanks
+  // the strip, which is safe to do directly and harmless to repeat if the
+  // constructor already did it. setColorRGB is the one call both versions
+  // agree on, and antennaTick() below already depends on it.
+  void antennaInit() {
+    pinMode(LED_CLK, OUTPUT);
+    pinMode(LED_DATA, OUTPUT);
+    leds.setColorRGB(0, 0, 0, 0);
+  }
   void setAntennaHue(int r, int g, int b) { aR = r; aG = g; aB = b; }
   void setAntennaLevel(int v) { aExt = constrain(v, 0, 255); aExtAt = millis(); }
   // The fallback breath must BE S1_IDLE's envelope, not a second, louder one.
@@ -252,7 +289,20 @@ void uiLayout() {
   uiNBtn = 0;
   if (uiScreen == "idle") {
     // the one screen a participant reads while deciding to act, so both are big
-    uiBtns[uiNBtn++] = {"PTT",  8, 132, 150, 100, COL_GREEN, "PTT"};
+    // "PTT" is the id the loop speaks; the LABEL is what a participant reads,
+    // and it is not the same word. Push-To-Talk is radio jargon -- nobody who
+    // has not used a walkie-talkie decodes it, and the study is not the place
+    // to find that out.
+    //
+    // The label says HOLD rather than TALK or RECORD because the failure it has
+    // to prevent is specific: this button is a LATCH (PTT_DOWN / PTT_UP), and
+    // every tap-to-record convention on earth says press once and let go. A
+    // participant who taps produces an instant down-up pair, an empty
+    // transcript, and S8 -- and reads that as the microphone being broken
+    // rather than as having used the button wrongly. The record dot drawn above
+    // it carries "this is the speaking one"; the word carries "and do not let
+    // go", which the dot cannot say.
+    uiBtns[uiNBtn++] = {"PTT",  8, 132, 150, 100, COL_GREEN, "HOLD"};
     uiBtns[uiNBtn++] = {"STOP", 166, 132, 146, 100, COL_RED, "STOP"};
   } else if (uiScreen == "recording") {
     // nothing: the finger is already on the button that matters
@@ -271,8 +321,18 @@ void uiDrawBtn(int i) {
   M5.Display.drawRoundRect(b.x, b.y, b.w, b.h, 10, TFT_DARKGREY);
   M5.Display.setTextColor(down ? TFT_BLACK : TFT_WHITE);
   M5.Display.setTextDatum(middle_center);
-  M5.Display.setTextSize(3);
-  M5.Display.drawString(b.label, b.x + b.w / 2, b.y + b.h / 2);
+  int cx = b.x + b.w / 2;
+  // The speaking button carries a record dot above its label. Icon AND word:
+  // the dot says which button this is at a glance, the word says what to do
+  // with it, and neither does the other's job. See the note in uiLayout().
+  if (String(b.id) == "PTT") {
+    M5.Display.fillCircle(cx, b.y + 34, 15, down ? TFT_BLACK : TFT_WHITE);
+    M5.Display.setTextSize(3);
+    M5.Display.drawString(b.label, cx, b.y + b.h - 28);
+  } else {
+    M5.Display.setTextSize(3);
+    M5.Display.drawString(b.label, cx, b.y + b.h / 2);
+  }
 }
 
 void uiDrawBar() {
@@ -284,7 +344,11 @@ void uiDrawBar() {
 }
 
 const char* uiText() {
-  if (uiScreen == "idle")      return "idle";
+  // "idle" was the state's name leaking onto the participant's screen. It is
+  // accurate and it is not for them: it describes what the machine is not
+  // doing. "ready" describes what they can do, which is the only thing this
+  // screen is for.
+  if (uiScreen == "idle")      return "ready";
   if (uiScreen == "waiting")   return "waiting...";
   if (uiScreen == "heard")     return "I heard you.";
   if (uiScreen == "planning")  return "planning...";
@@ -298,6 +362,19 @@ void uiDraw() {
   M5.Display.fillScreen(TFT_BLACK);
   uiLayout();
   if (uiScreen == "recording") {
+    // The bar alone showed LEVEL but never said RECORDING, so the one moment a
+    // participant most needs confirming -- "is it getting this?" -- was carried
+    // entirely by a bar that also moves when nobody speaks. Dot and word, the
+    // same pairing as the button, in the same place they were promised.
+    //
+    // Drawn ONCE here rather than in uiTick: only the bar's own rectangle
+    // repaints at 12 Hz, and a full redraw at that rate stalls loop(), which is
+    // also driving the LED.
+    M5.Display.fillCircle(64, 60, 11, COL_RED);
+    M5.Display.setTextColor(TFT_WHITE);
+    M5.Display.setTextDatum(middle_left);
+    M5.Display.setTextSize(3);
+    M5.Display.drawString("recording", 86, 60);
     uiDrawBar();
   } else if (uiScreen == "noticed") {
     M5.Display.setTextColor(TFT_WHITE);
@@ -306,6 +383,21 @@ void uiDraw() {
     M5.Display.drawString(String(noticedN), SCREEN_W / 2, 70);
     M5.Display.setTextSize(3);
     M5.Display.drawString("noticed", SCREEN_W / 2, 122);
+  } else if (uiScreen == "idle") {
+    // Two lines, not "ready ^_^" on one. On one line the face trails the word
+    // like punctuation; given its own line and a larger size it reads as a
+    // face, which is the whole point of putting it there.
+    //
+    // PURE ASCII, deliberately. The default GFX font is 32..126 only -- a
+    // Unicode kaomoji would come out as blanks or tofu, and it would do so
+    // silently, on the one screen a participant looks at before deciding
+    // whether this thing works.
+    M5.Display.setTextColor(TFT_WHITE);
+    M5.Display.setTextDatum(middle_center);
+    M5.Display.setTextSize(3);
+    M5.Display.drawString(uiText(), SCREEN_W / 2, 62);
+    M5.Display.setTextSize(4);
+    M5.Display.drawString("^_^", SCREEN_W / 2, 100);
   } else {
     M5.Display.setTextColor(TFT_WHITE);
     M5.Display.setTextDatum(middle_center);
@@ -391,16 +483,102 @@ void handleLine(String line) {
   else if (cmd == "LED")     setAntennaLevel(arg.toInt());
   else if (cmd == "SFX")     sfxByName(arg);
   else if (cmd == "VOL")     M5.Speaker.setVolume(constrain(arg.toInt(), 0, 255));
+  // Derivation for every value here is in robot_motion/LED_COLOR_DESIGN.md.
+  // Short version, because the reasoning is not guessable from the numbers:
+  //
+  //   Colour is the WEAKEST channel -- 69% classification alone against 92%
+  //   for colour+motion (Loffler et al., HRI'18, n=33). So these are not
+  //   chosen to be expressive on their own, which they cannot be. They are
+  //   chosen to (a) be tellable apart and (b) not contradict the clip that is
+  //   playing, because a colour fighting its motion is worse than no colour.
+  //
+  //   BRIGHTNESS CARRIES AROUSAL. Both Loffler and Song & Yamada put the
+  //   passive state at reduced brightness and the active one at full. The old
+  //   table ran everything at V ~1.0 and used hue alone, which is why idle and
+  //   error ended up 5 degrees apart and indistinguishable.
   else if (cmd == "HUE") {
     String s = arg; s.toUpperCase();
-    if      (s == "WARM")  setAntennaHue(255, 150,  60);   // present, idle
-    else if (s == "COOL")  setAntennaHue( 60, 150, 230);   // attending
-    else if (s == "RED")   setAntennaHue(255,  40,  30);   // negation (S6)
-    // Blue near zero on purpose: at 90 it read as teal beside COOL, because a
-    // diffused P9813's blue die is strong and any blue left in "green" pulls it
-    // toward the colour it has to contrast with.
-    else if (s == "GREEN") setAntennaHue(  0, 255,  40);   // a result (S7)
-    else if (s == "ALARM") setAntennaHue(240, 140,  20);   // stuck (S8)
+    // EVERY VALUE HERE IS AT FULL BRIGHTNESS. These set the COLOUR only; how
+    // bright it is at any instant is `s` in antennaTick(), streamed from the
+    // clip's led column. Multiplying a dimmed hue by a dim envelope dims twice:
+    // WARM was briefly set to V .38, and against S1's envelope (0.0375..0.3125)
+    // that put the antenna at (3,2,0) -- a regime where 8-bit PWM no longer
+    // controls colour, and this module's strong blue die wins. Idle came up
+    // BLUE. Arousal belongs in the envelope, which is per-clip and exists.
+    //
+    // SATURATION DOES NOT TRANSFER FROM THE PAPERS. Loffler displayed their
+    // colours on an ANDROID PHONE SCREEN -- a large flat field with surrounding
+    // context. This is one diffused point source: small, self-luminous, with no
+    // white anywhere near it for the eye to judge against. Below roughly S 0.5
+    // a point LED collapses to WHITE. SPENT was set to the paper's 230/40 and
+    // came up pure white on the bench, which is how this was found.
+    //
+    // So hues are taken from the literature and SATURATION IS RE-DERIVED FOR
+    // THIS DISPLAY: anything that must read as a colour sits at S >= 0.6.
+    // The one exception is deliberate and is also a citation -- Song & Yamada
+    // map RELAXED to WHITE, so idle reading as a warm white is the intended
+    // percept rather than a washed-out amber.
+    if      (s == "WARM")  setAntennaHue(255, 242, 224);   // present, idle
+    else if (s == "COOL")  setAntennaHue( 64, 255, 255);   // attending
+    // negation. "Seeing red" is the one colour metaphor both papers agree on,
+    // at full brightness for high arousal. Agrees with S6's horizontal shake.
+    else if (s == "RED")   setAntennaHue(255,   0,   0);   // negation (S6)
+    // S7, the summons. 45/100/100 -- and this is the ONLY colour in the table
+    // taken from a RESULT rather than from a candidate list. Loffler's Table 1
+    // ("final expression designs tested in the user evaluation") gives joy as
+    // 45/100/100 after a 22-participant manipulation check narrowed 57 stimuli
+    // to 12. Anger there is 0/100/100, which is exactly RED above.
+    //
+    // WAS GREEN, then briefly MAGENTA, and both were wrong for reasons worth
+    // keeping. Green is the low-arousal positive corner (Song & Yamada map it
+    // to *happy*, a calm positive) while S7 is the highest-arousal moment in
+    // the library -- and COL_GREEN is the OK button eight centimetres away, so
+    // "I found something" and "dismiss it" were one colour in one visual field.
+    // Magenta 315/100/100 was then chosen off Loffler's JOY CANDIDATE list --
+    // but 315 is one of the variants that LOST the manipulation check, and it
+    // was picked as if it were a finding. It read as harsh and unpleasant on
+    // the bench, which is presumably why 22 undergraduates dropped it.
+    else if (s == "SUMMON") setAntennaHue(255, 191,   0);   // a finding (S7)
+    // S8, and this one went out and came back. It was amber, was moved to blue
+    // on Loffler's "sadness is blue", and is amber again -- dim.
+    //
+    // THE COLOUR WAS NEVER THE DEFECT. S8 was reported as an alarm because it
+    // ran at 143 (brighter than S5B_TRACK's 96, i.e. being stuck outshone
+    // working) and because its envelope re-inflated LO->HI every four seconds,
+    // which is an alarm's rhythm. Both are fixed in the clip: 13..51, decaying.
+    // Changing the hue as well was an over-correction of a brightness problem.
+    //
+    // AND FOR A LIGHT, AMBER IS THE BETTER READING. Kovecses' sadness metaphors
+    // as Loffler lists them are darkness, "lacking brightness", passiveness, and
+    // cold -- "losing his father put his fire out". Blue is one entry in that
+    // set and it is the SYMBOLIC one, which is what suits a colour field on a
+    // phone screen (their display). A failing LIGHT does not turn blue; embers,
+    // a guttering candle and a browning-out bulb all shift warm as they die.
+    // "The light going out of it" is literally a warm-shift.
+    //
+    // At S .95 and 13..51 this is a coal, not a warning lamp. It is separated
+    // from SUMMON by 5x peak brightness and from RED by 3.7x -- brightness and
+    // motion, which is where separation belongs (colour is the weak channel).
+    else if (s == "SPENT")  setAntennaHue(255, 134,  13);   // stuck (S8)
+    // Old names kept so a CoreS3 that has not been reflashed still lights up
+    // rather than going dark mid-session. They map to the NEW colours: the
+    // point is the colour, not the word.
+    else if (s == "GREEN")  setAntennaHue(255, 191,   0);
+    else if (s == "ALARM")  setAntennaHue(255, 134,  13);
+    else {
+      // AN UNKNOWN HUE USED TO DO NOTHING, WHICH IS THE WORST AVAILABLE
+      // BEHAVIOUR. The chain simply fell through and the antenna kept whatever
+      // colour was last set -- so a board flashed before SUMMON/SPENT existed
+      // showed S8 in S1's colour, and the two states that most need telling
+      // apart became one. Nothing reported a fault: every layer had done
+      // exactly what it was written to do.
+      //
+      // The compatibility aliases above are the WRONG DIRECTION for this. They
+      // protect an old laptop driving new firmware; the failure that actually
+      // happens is a new laptop driving old firmware, and no amount of aliasing
+      // here can reach a board that has not been flashed. Only saying so can.
+      Serial.print("IN WARN unknown hue "); Serial.println(s);
+    }
   }
   else if (cmd == "REST") {
     // End of a run. Without this, a test that finishes on S8 leaves the amber
@@ -408,10 +586,10 @@ void handleLine(String line) {
     // quiet.
     sfxLen = sfxIdx = 0;
     aExt = -1;
-    setAntennaHue(255, 150, 60);
+    setAntennaHue(255, 242, 224);   // = WARM. Keep in sync with HUE above.
     uiSet("idle");
   }
-  else if (cmd == "PING") Serial.println("IN PONG cores3_sidekick v2");
+  else if (cmd == "PING") Serial.println("IN PONG cores3_sidekick v4");
 }
 
 // ---------------- setup / loop -------------------------------------------------
@@ -424,7 +602,7 @@ void setup() {
   antennaInit();
   tapInit();
   uiDraw();                 // the idle screen, immediately -- no legacy layout
-  Serial.println("IN HELLO cores3_sidekick v2");
+  Serial.println("IN HELLO cores3_sidekick v4");
 }
 
 void loop() {

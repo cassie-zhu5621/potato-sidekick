@@ -33,7 +33,7 @@ import bpy
 import math
 
 # ---- the pose it inherits (must match generate_s2_listen.py's closing pose) ----
-USER_PAN = 60.0    # SHARED with generate_s2_listen.py -- see the long note there.
+USER_PAN = -30.0    # SHARED with generate_s2_listen.py -- see the long note there.
                    # Must be identical in s2/s3/s7_beckon/s7_found: it is the one
                    # direction 'the person' lies in.
 LEAN = -28.0       # S2 end: neck leaning toward the user
@@ -110,7 +110,7 @@ LED_SWELL = 6.0
 
 EASE_MODE = "minjerk"      # "minjerk" | "cosine" -- see generate_s2_listen.py
 FPS = 30
-SAMPLE_F = 2
+SAMPLE_F = 1
 # -----------------------------------------------------------
 
 HOLD_IN_F = int(round(HOLD_IN_S * FPS))

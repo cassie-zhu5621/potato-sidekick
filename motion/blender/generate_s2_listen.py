@@ -95,7 +95,7 @@ LISTEN_NOD = 53.0      # chin up 51 deg, bringing the gaze from +6 to +25 -- ONT
                        # These two are S3_ACK's starting pose -- S3 dips FROM the
                        # raised chin, so the pair is a shared boundary condition,
                        # not a free choice. Change one, change both.
-USER_PAN = 60.0        # template. The firmware retargets this at runtime to
+USER_PAN = -30.0        # template. The firmware retargets this at runtime to
                        # wherever the speaker actually is.
                        #
                        # THIS VALUE IS SHARED. The same constant appears in
@@ -277,7 +277,7 @@ LED_ATTEND = 3.0       # the attending level (LED_PALETTE), reached with the
                        # The mic level takes over from here for the hold.
 
 FPS = 30
-SAMPLE_F = 2           # this clip is short and all of it is moving, so sample
+SAMPLE_F = 1           # this clip is short and all of it is moving, so sample
                        # finely -- the ease curves are the content here
 # -----------------------------------------------------------
 
