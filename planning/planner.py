@@ -21,7 +21,7 @@ import hashlib, json, os
 from pathlib import Path
 from typing import Optional, Sequence
 
-from planning.gemini_provider import DEFAULT_MODEL, call_json, model_name
+from planning.provider import DEFAULT_MODEL, call_json, model_name
 
 MODEL = model_name()
 
@@ -187,9 +187,19 @@ Prefer common object names.
 
 CONTEXT: "{context}"
 
+THE CONTEXT IS USUALLY DICTATED AND AUTOMATICALLY TRANSCRIBED, so it may contain
+mis-hearings: wrong but similar-sounding words, missing articles, broken grammar.
+Read it for what the person plainly meant and plan for that. A word that makes no
+sense in a room with a camera is almost always a mis-transcription of one that does
+-- "a prison, drinking" is "a person drinking". Do NOT ask for clarification, do
+NOT refuse, and do NOT return an empty plan because the wording is odd; commit to
+the most plausible reading and note the assumption in "why". If a request is truly
+unreadable, still return a valid plan for the most likely intent.
+
 Write every natural-language output field, including labels, why, and missing, in English.
 Return ONLY JSON, exactly this schema — use ONLY the fields shown, no additional fields,
-no markdown fences:
+no markdown fences. Every field must have its NATIVE type: "watch" is a JSON array of
+objects, never a string containing JSON. Do not encode any part of the answer twice.
 {schema}"""
 
 
@@ -205,7 +215,19 @@ def validate(spec: dict, grammar: str = "restricted") -> list:
     v = []
     w = spec.get("watch")
     if not isinstance(w, list) or not w:
-        return ["watch: missing or empty"]
+        # SAY WHAT IT ACTUALLY WAS. "missing or empty" was reported for a `watch`
+        # that was neither -- it was a 2 kB STRING holding the entire spec, JSON
+        # encoded twice. The message described the case the author had in mind
+        # rather than the value in hand, and cost an hour aimed at the wrong
+        # layer. unwrap_double_encoded() now repairs that shape before this runs,
+        # so anything still arriving here is a different problem and should be
+        # able to say so itself.
+        if w is None:
+            return ["watch: missing"]
+        if isinstance(w, list):
+            return ["watch: empty list"]
+        preview = repr(w)[:80]
+        return [f"watch: expected a list, got {type(w).__name__} {preview}"]
     if len(w) > 3:
         v.append(f"watch: {len(w)} entries (>3)")
     allowed = _FREE_FIELDS if grammar == "free" else _RESTRICTED_FIELDS
@@ -315,6 +337,51 @@ def _offline(context: str, grammar: str) -> dict:
             "detect": ["person", "laptop", "cup", "dining table"], "focus": ["person"]}
 
 
+def unwrap_double_encoded(spec):
+    """Repair a spec whose whole body was returned as a STRING in one field.
+
+    Observed on a real run (2026-08-05, request garbled by Whisper into
+    "Expecting a prison, drinking, a holding a bottle"):
+
+        {"watch": "{\\"watch\\": [{...}], \\"seen\\": [...], \\"detect\\": [...]}"}
+
+    -- the entire answer JSON-encoded a second time and stuffed into `watch`.
+    Both the first attempt and the retry did it, so it is a stable response to a
+    confusing prompt, not a flake. The whole session went to S8 over a reply that
+    contained a perfectly good plan.
+
+    THE PROMPT WILL KEEP BEING CONFUSING. Requests arrive through Whisper, and
+    "a person drinking" becoming "a prison, drinking" is an ordinary Tuesday. A
+    pipeline that cannot survive one malformed envelope around correct content
+    will keep ending sessions on transcription noise.
+
+    Only unwraps when it is unambiguous: a string that parses to a dict which
+    itself carries a `watch`. Anything else is returned untouched, so a genuinely
+    empty plan still fails validation and still reaches S8.
+    """
+    if not isinstance(spec, dict):
+        return spec
+    inner = spec.get("watch")
+    if not isinstance(inner, str):
+        return spec
+    try:
+        parsed = json.loads(inner)
+    except Exception:
+        return spec
+    if isinstance(parsed, dict) and isinstance(parsed.get("watch"), list):
+        merged = dict(spec)
+        merged.update(parsed)          # the inner copy is the real answer
+        print("[planner] repaired a double-encoded reply "
+              "(whole spec was a string inside 'watch')")
+        return merged
+    if isinstance(parsed, list):       # just the list, encoded
+        merged = dict(spec)
+        merged["watch"] = parsed
+        print("[planner] repaired a double-encoded 'watch' list")
+        return merged
+    return spec
+
+
 def plan(context: str, jpeg: Optional[bytes | Sequence[bytes]] = None, model: str = MODEL,
          temperature: float = 0.0, grammar: str = "restricted") -> dict:
     """-> {"spec":..., "violations":[...], "raw": text, "grammar": grammar}."""
@@ -331,6 +398,11 @@ def plan(context: str, jpeg: Optional[bytes | Sequence[bytes]] = None, model: st
             labels=[f"spatial_view_{i}" for i in range(len(images))], model=model,
             max_output_tokens=4096,
         )
+        # Repair before validating, never after: validate() reports what it was
+        # handed, so an unrepaired envelope surfaces as a violation about the
+        # CONTENTS ("watch: missing or empty") and sends the next person looking
+        # at the model's judgement instead of at its packaging.
+        spec = unwrap_double_encoded(spec)
         return {"spec": spec, "violations": validate(spec, grammar),
                 "raw": text, "grammar": grammar}
     except Exception as ex:

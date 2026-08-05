@@ -24,7 +24,7 @@ import json, os, re, hashlib
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence
 
-from planning.gemini_provider import call_json, model_name
+from planning.provider import call_json, model_name
 
 MODEL = model_name(os.environ.get("NOTICEBOT_GEMINI_JUDGE_MODEL"))
 
@@ -198,60 +198,96 @@ JUDGE_SCHEMA = {
 }
 
 
+# ONE JOB: is this card worth reporting, and what would you say about it.
+#
+# WHAT WAS REMOVED, AND WHY. The previous schema also asked for four 0-1 axes
+# (people / relevance / consequence / continuity) scored on "the shared moment",
+# plus a note AND a feedback sentence. Downstream reads `selected_index`,
+# `confirmed`, `feedback` and the per-card reason; `axes` and `why` were
+# referenced ZERO times -- the model computed them, the parser unpacked them,
+# and they were dropped.
+#
+# `continuity` was worse than unused: "a follow-up on something noticed before"
+# is unanswerable from five images and a card list, because nothing about what
+# was noticed before is in the request. A model asked to score information it
+# has not been given cannot resolve it, only deliberate about it.
+#
+# The remaining split -- judge each card independently, THEN rank them by three
+# criteria to pick exactly one -- is two different tasks in one call. Ranking is
+# now mechanical (the most specific passing card, ties to the given order), so
+# the model only judges.
+# ONE QUESTION: do these five frames show something worth telling the person
+# about, and what would you say.
+#
+# THE SUBJECT IS THE MOMENT, NOT THE CARD. Earlier versions asked the model to
+# VERIFY each of CV's cards against the images -- "the precision half of the
+# gate->VLM split" -- which meant N independent geometric adjudications plus a
+# ranking, plus four 0-1 axes on the side. That is what a 40-278 s judge was
+# spending its time on, against a planner at 5-17 s on the same model and the
+# same five 1280x720 frames.
+#
+# The verification was defensible and it is being given up on purpose. What it
+# bought, measured over 42 recorded calls: ONE case where CV claimed "gazing at
+# AND drinking water" and the model passed only "hands on bottle", because the
+# person was holding the bottle without drinking.
+#
+# It is affordable to lose because THE CARD LABEL NEVER REACHES THE PARTICIPANT.
+# They get the spoken sentence and the robot's motion; the label goes to
+# attention_log and the researcher's screen. A `describe` written from the
+# images cannot inherit a wrong label, so a bad card is now a logging artefact
+# rather than the robot announcing something that did not happen.
+#
+# The labels are still sent -- as a one-line hint, not as claims to adjudicate.
+# Five frames of a room with no hint of what to look at is an invitation to
+# describe the wrong corner.
 GROUP_JUDGE_SCHEMA = {
     "type": "object",
     "properties": {
-        "axes": JUDGE_SCHEMA["properties"]["axes"],
-        "candidates": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "index": {"type": "integer"},
-                    "confirmed": {"type": "boolean"},
-                    "reason": {"type": "string"},
-                },
-                "required": ["index", "confirmed", "reason"],
-                "additionalProperties": False,
-            },
-        },
-        "selected_index": {"type": "integer"},
-        "note": {"type": "string"},
-        "feedback": {"type": "string"},
+        "pass": {"type": "boolean"},
+        "describe": {"type": "string"},
     },
-    "required": ["axes", "candidates", "selected_index", "note", "feedback"],
+    "required": ["pass", "describe"],
     "additionalProperties": False,
 }
 
 
-def _group_prompt(candidates: list[dict], taste: ReportabilityTaste) -> str:
-    axes = "\n".join(f"  - {name}: {rubric}" for name, (rubric, _) in AXES.items())
-    about = (f'\nThe person especially cares about: "{taste.about.strip()}".'
+def _group_prompt(candidates: list[dict], taste: ReportabilityTaste,
+                  request: str = "") -> str:
+    noticed = ", ".join(str(c.get("label") or "") for c in candidates
+                        if c.get("label"))
+    about = (f'\nThis person generally cares about: "{taste.about.strip()}".'
              if taste.about.strip() else "")
-    return f"""You are the noticing companion's visual judgment brain.
-The five supplied images are temporal evidence from the same camera at
-t-1.0s, t-0.5s, onset, t+0.5s, and t+1.0s.
+    req = ""
+    if (request or "").strip():
+        req = (f'\nTHEY ASKED FOR: "{request.strip()}"\n'
+               f'Dictated and auto-transcribed, so read it for what was meant.')
+    return f"""Decide whether these five frames are worth interrupting someone for.
 
-CV proposed ALL of the following candidate cards at that same onset:
-{json.dumps(candidates, ensure_ascii=False, indent=2)}
+Same camera at t-1.0s, t-0.5s, onset, t+0.5s, t+1.0s.
+{req}{about}
 
-Evaluate every candidate independently against the images. Cheap 2D geometry can be
-wrong because of depth, so confirm only what the images support. Do not ignore a card
-just because another card is confirmed. Score the shared moment on these axes (0-1):
-{axes}{about}
+Motion detection thinks it saw: {noticed or "something"}
+That is a hint about where to look, not a claim to check.
 
-Return one result for every candidate using its exact index. If none are confirmed,
-selected_index must be -1. If one or more are confirmed, selected_index must identify
-exactly one confirmed card: prefer the most specific card and the one most relevant to
-the user's request; use the given order only as a tie-break. The application will send
-only this winner as one notification. All natural-language response fields, including
-each reason, note, and feedback, must be written in English. Feedback must be one short
-English sentence addressed to the user.
+`pass`: TRUE IF THE FRAMES SHOW WHAT THEY ASKED FOR. That is the whole test.
+A standing state counts -- "people reading books" is satisfied by someone
+reading, it does not have to start or change while you watch.
+Only fall back on "is this worth mentioning at all" when they asked for
+nothing in particular. False if what they asked for is not there, or if the
+frames show it only ambiguously -- cheap 2D geometry misjudges depth, so do
+not pass a moment just because the hint says so.
+
+`describe`: ONE short plain sentence about what is happening, for them to read.
+Written in English whatever language the request arrived in -- the robot's
+screen is English, and a reply in another language reads as a different system
+answering. Empty if pass is false.
+
 Return only the requested JSON."""
 
 
 def judge_candidate_group(jpeg: Optional[bytes | Sequence[bytes]], entries: Sequence[dict],
-                          taste: ReportabilityTaste, model: str = MODEL) -> dict:
+                          taste: ReportabilityTaste, model: str = MODEL,
+                          request: str = "") -> dict:
     """Evaluate coincident cards in one Gemini call and select at most one winner."""
     images = ([jpeg] if isinstance(jpeg, (bytes, bytearray)) else list(jpeg or []))
     candidate_specs = []
@@ -285,42 +321,46 @@ def judge_candidate_group(jpeg: Optional[bytes | Sequence[bytes]], entries: Sequ
     else:
         try:
             raw, _ = call_json(
-                _group_prompt(candidate_specs, taste), GROUP_JUDGE_SCHEMA,
+                _group_prompt(candidate_specs, taste, request), GROUP_JUDGE_SCHEMA,
                 images=images,
                 labels=["t-1.0s", "t-0.5s", "t0_onset", "t+0.5s", "t+1.0s"]
                        if len(images) == 5 else [f"panel_{i}" for i in range(len(images))],
                 model=model, max_output_tokens=768,
             )
-            axes = {a: float(raw.get("axes", {}).get(a, 0.0)) for a in AXES}
-            by_index = {}
-            for row in raw.get("candidates", []):
-                index = int(row.get("index", -1))
-                if 0 <= index < len(candidate_specs) and index not in by_index:
-                    by_index[index] = {
-                        "index": index,
-                        "confirmed": bool(row.get("confirmed", False)),
-                        "reason": str(row.get("reason", ""))[:160],
-                    }
-            rows = [by_index.get(i, {"index": i, "confirmed": False,
-                                     "reason": "Gemini returned no result for this card"})
+            ok = bool(raw.get("pass", False))
+            note = str(raw.get("describe", ""))[:160]
+            # ONE verdict covers the group: the model judged the MOMENT, so every
+            # card that pointed at it inherits that verdict. `candidate_results`
+            # survives for the web UI, which shows a row per card.
+            rows = [{"index": i, "confirmed": ok,
+                     "reason": note or ("worth reporting" if ok else "not worth reporting")}
                     for i in range(len(candidate_specs))]
-            selected = int(raw.get("selected_index", -1))
-            if not (0 <= selected < len(rows) and rows[selected]["confirmed"]):
-                selected = -1
-            note = str(raw.get("note", ""))[:160]
-            feedback = str(raw.get("feedback", ""))[:160]
+            # WHICH CARD LABELS THE STORY is now purely bookkeeping -- the model
+            # is not asked, because nothing it could say would reach the person.
+            # Most specific first (more relation ids = says more), ties to CV's
+            # own order, which order_coincident_candidates already fixed.
+            def _specificity(i):
+                c = candidate_specs[i]
+                return len(set(c.get("all") or []) | set(c.get("any") or [])
+                           | set(c.get("then") or []))
+
+            selected = (max(range(len(candidate_specs)),
+                            key=lambda i: (_specificity(i), -i))
+                        if ok and candidate_specs else -1)
+            feedback = note
         except Exception as exc:
-            axes = {a: 0.0 for a in AXES}
             rows = [{"index": item["index"], "confirmed": False,
-                     "reason": f"Gemini error: {str(exc)[:80]}"}
+                     "reason": f"judge error: {str(exc)[:80]}"}
                     for item in candidate_specs]
             selected = -1
-            note = f"Gemini error: {str(exc)[:80]}"
+            note = f"judge error: {str(exc)[:80]}"
             feedback = ""
 
     confirmed = selected >= 0
-    worth = taste.compose(axes) if confirmed else 0.0
-    return {"worth": worth, "why": taste.why(axes), "note": note,
+    # `axes`/`worth`/`why` are kept in the RETURN so callers do not change; the
+    # model is no longer asked for them and nothing downstream reads them.
+    axes = {a: 0.0 for a in AXES}
+    return {"worth": 1.0 if confirmed else 0.0, "why": "", "note": note,
             "feedback": feedback, "axes": axes, "confirmed": confirmed,
             "selected_index": selected, "candidate_results": rows}
 
