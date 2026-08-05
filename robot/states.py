@@ -8,17 +8,38 @@ control flow scattered through a loop.
   then  : where a one-shot goes when it finishes (None = hold the last pose)
   hue   : LED colour intent, handed to the CoreS3. Colour says WHAT KIND of
           state this is; the clip's `led` column says how bright, moment to
-          moment. Palette:
-            warm  - present, not attending          (S1)
-            cool  - attending, nothing to report    (S2-S5)
-            red   - negation, "not that one"        (S6)
-            green - a result worth your attention   (S7)
-            alarm - stuck, needs a human            (S8)
-          Colour is REDUNDANT with the motion, never the only carrier: S6 is
-          also a fast horizontal shake and S7 is also a turn-crane-toss, so a
-          red/green-deficient participant still reads them apart. That
-          redundancy is deliberate -- roughly 8% of men could not use the
-          palette on its own.
+          moment. Palette (derivations: robot_motion/LED_COLOR_DESIGN.md):
+            warm   - present, not attending, LOW arousal   (S1)
+            cool   - attending, nothing to report          (S2-S5)
+            red    - negation, "not that one"              (S6)
+            summon - a finding, come and look              (S7)
+            spent  - stuck, the light going out of it      (S8)
+          Colour is REDUNDANT with the motion, never the only carrier. That is
+          not caution, it is the measured order of the two channels: colour
+          alone classifies at 69%, motion alone at 79%, colour+motion at 92%
+          (Loffler et al. HRI'18, n=33). Colour is the WEAKEST signal here, so
+          its job is to agree with the clip rather than to carry the state --
+          and a colour that CONTRADICTS its motion is worse than none, because
+          then the strong channel and the weak one are in competition.
+
+          TWO RENAMES, both of which were real defects:
+
+          green -> summon. Green is the low-arousal positive corner (Song &
+            Yamada map green to *happy*), while S7 is the highest-arousal
+            moment in the library. It was also COL_GREEN, the OK button, so
+            "I found something" and "dismiss it" were the same colour in the
+            same visual field.
+          alarm -> spent. The NAME was the bug: it made an alarm colour look
+            correct for a gesture that is a deflation. S8 droops and sways --
+            down, passive, dark -- which operationalises to blue at reduced
+            brightness, not to urgent amber at V 0.94.
+
+          The rename also fixes the accessibility case rather than only
+          declaring it. The old palette put the two most opposed states, S6
+          negation and S7 finding, on RED and GREEN -- precisely the pair that
+          ~8% of men cannot separate, so for them the two loudest signals in
+          the grammar collapsed into one. Magenta keeps the blue channel, which
+          every common deficiency leaves intact.
   sfx   : the state's sound, or None for silence. Silence is a choice, and there
           are four of them: S1 and S5 must not compete for attention, S7b would
           be talking over S7a, and S2's turn is already legible without help.
@@ -169,7 +190,7 @@ STATES = {
              "grammar; nothing else shakes horizontally."),
 
     "S7a": dict(
-        clip="S7a", loop=False, then="S7b", hue="green",
+        clip="S7a", loop=False, then="S7b", hue="summon",
         sfx="excited", sfx_at=0.0, sfx_flash=None, sfx_loop=False,
         # 0.0: this one IS the announcement -- it should arrive with the
         # turn, calling you before the robot has finished arriving
@@ -178,14 +199,14 @@ STATES = {
              "finding, crane toward it, hold). Ends on the object."),
 
     "S7b": dict(
-        clip="S7b", loop=True, then=None, hue="green",
+        clip="S7b", loop=True, then=None, hue="summon",
         sfx=None, sfx_at=0.0, sfx_flash=None, sfx_loop=False,
         screen="noticed", enter="auto", exit="OK pressed, or 30 s ignored -> S5",
         note="ensure -- alternating you <-> the finding: 'come' (toss at you) / "
              "'there' (hold on it). The alternation is the confirmation."),
 
     "S8_ERROR": dict(
-        clip="S8_ERROR", loop=True, then=None, hue="alarm",
+        clip="S8_ERROR", loop=True, then=None, hue="spent",
         sfx="lost", sfx_at=0.16, sfx_flash=None, sfx_loop=True, sfx_every=4,
         # 0.16 = the first swing extreme, where the LED also peaks. The old 0.0
         # pointed at frame 1, which since v2 holds the droop and is not a beat.
@@ -224,6 +245,39 @@ NEEDS_ATTENTION = {"S8_ERROR"}
 # merely never equal to anything. validate() now checks both sets, so the same
 # mistake fails loudly at construction.
 
+# The pan angles S7a and S7b are AUTHORED at. Both clips are templates: the
+# object leg is wherever S5b was actually watching, and the user leg is wherever
+# the person actually is. At runtime ClipPlayer maps the authored pair onto the
+# real pair -- see ClipPlayer.set_share_pan and S7_DESIGN.md sec 5.
+#
+# Declared here rather than re-derived from the CSV, because the clip's extremes
+# are NOT the plateaus: S7a overshoots to +64 past the user before settling, and
+# reading min/max would silently adopt the overshoot as the endpoint and shrink
+# every gesture by 4 degrees.
+SHARE_TEMPLATE = {"user": 60.0, "object": -25.0}
+
+# Where the person is when nobody has said. S2/S3 are AUTHORED at this angle --
+# the participant is seated to the robot's left -- so it is the only defensible
+# default: the robot has already turned this way once to listen, in front of the
+# person, and a later state that faces somewhere else is contradicting a turn
+# they watched it make.
+#
+# SHARE_TEMPLATE["user"] is NOT this number and must not be confused with it.
+# That +60 is a TEMPLATE POSITION INSIDE THE S7 CLIPS, which `remap_share_pan`
+# rewrites at runtime; it is a coordinate in the authored file, not a claim about
+# the room. This one is a claim about the room.
+USER_PAN_AUTHORED = -30.0     # = generate_s2_listen.py / generate_s3_ack.py
+
+# Clips that ADDRESS THE PERSON and must therefore be played facing them, not at
+# whatever angle they happen to have been authored at. S6 is the whole list: it
+# is the robot being corrected, which is a thing said TO someone.
+#
+# S6 was authored at +25 -- S5b's template watching angle -- because it was drawn
+# as a continuation of watching. It is not: the tap is the person interrupting,
+# and answering an interruption while facing 55 degrees away from the person who
+# made it reads as the robot shaking its head at the wall.
+USER_FACING = ("S6_FINETUNE",)
+
 # CV perceives here. Not S4 -- during the sweep the VLM is the only eye, because
 # annotating a frame before the model reads it feeds our guesses back as its
 # judgement.
@@ -239,11 +293,57 @@ PAN_RETARGETABLE = ("S5B_TRACK", "S5A_SETTLE")
 # the person is busy, which is the premise of notice delegation. The finding is
 # already in the feed, so the robot goes back to watching instead of escalating.
 # That is the difference between a colleague and an alarm.
+S8_RECOVER_S = 45.0      # S8 gives up and returns to S1_IDLE after this long.
+                         # Its clip is `exit: STOP only`, which was right when
+                         # the only reader was a researcher sitting at the
+                         # keyboard. In a session it is not: S8 is entered from
+                         # a failed plan, an unusable transcript, a dead camera
+                         # -- none of which a PARTICIPANT can clear, and none of
+                         # which they can even name. Without this the robot
+                         # droops until someone walks over, which for the person
+                         # in the chair is indistinguishable from having broken
+                         # it.
+                         #
+                         # RETURNING TO IDLE IS NOT PRETENDING NOTHING HAPPENED.
+                         # S1 is "present, not attending" -- the honest state
+                         # after a failure the robot cannot fix: it stopped
+                         # trying, and it is still here. The failure stays in the
+                         # log and on the researcher's screen.
+                         #
+                         # 45 s is long enough that the droop reads as a held
+                         # posture rather than a stumble (S8's own loop is 4 s,
+                         # so it is seen ~11 times) and short enough that a
+                         # participant is not left waiting on a machine that has
+                         # already given up. Set to 0 or None to restore
+                         # STOP-only.
 S7_IGNORED_TIMEOUT_S = 30.0
 
 # How long the loop waits for Whisper before giving up and showing S8. Generous:
 # a wrong transcript is recoverable (S6 exists), a hang in S3 is not -- the screen
 # is already promising the participant that it heard them.
+# How long the VLM may take to answer before the robot admits it is stuck.
+#
+# The planner runs on a daemon thread and the Gemini client has NO request
+# timeout, so a call that never returns used to leave the robot holding at the
+# last swept angle with `planning...` on the screen -- forever, silently, with no
+# error anywhere. Everything downstream was correct: the failure path exists and
+# reaches S8. There was simply nothing to notice that the call had gone quiet.
+#
+# 90 s, and every part of that is measured rather than guessed. A warm call over
+# five frames takes ~16 s; the planner retries once, so two attempts is ~35 s;
+# and gemini_provider.warm() has already paid the ~60 s cold start at startup, so
+# it is not in this budget. 90 leaves better than 2x headroom over the worst
+# honest case.
+#
+# It was 45, chosen before any of that was known, and the first real run went:
+# attempt 1 at 76.4 s (cold, and truncated by an output budget nothing read),
+# retry at 16.4 s, answer correct -- arriving at 93 s to find the flow had given
+# up at 45 and STOP had discarded it. The number was not wrong so much as
+# uninformed; a deadline is only meaningful once the thing it bounds is measured.
+# A slow-but-working answer must not be cut off -- the same reason stt_busy is
+# allowed to postpone the STT deadline. This is the ceiling, not the budget.
+PLAN_TIMEOUT_S = 90.0
+
 STT_TIMEOUT_S = 15.0
 
 # --- re-planning, and why there is no confirmation step ---------------------
@@ -255,8 +355,16 @@ STT_TIMEOUT_S = 15.0
 # See robot_motion/S4_S5_DESIGN.md sec 1.
 #
 # S4 re-fires on two conditions:
-REPLAN_IDLE_S = 30.0     # tracking has seen nothing. The detection is real:
+REPLAN_IDLE_S = 60.0     # tracking has seen nothing. The detection is real:
                          # *there is nothing here*.
+                         #
+                         # WAS 30, measured on hardware 2026-08-05 and too short.
+                         # A sweep costs ~6 s, so 30 meant a re-sweep every ~36 s
+                         # -- eight in a five-minute watch. Nothing happening is
+                         # this robot's NORMAL condition, not evidence the angle
+                         # is wrong, and a machine that re-scans every half minute
+                         # reads as agitated rather than attentive.
+                         # Set to 0 or None to switch the idle re-plan off.
 REPLAN_PERIOD_S = 300.0  # structural, not precautionary. An object that entered
                          # the room after the last plan has never been detected,
                          # is not in the candidate set, and can never be chosen.
@@ -290,7 +398,28 @@ AIM_CHANGED_DEG = 15.0
 # has stopped being a colleague and become a stuck appliance. Going back to the
 # same aim is the honest fallback -- it was told the choice was wrong, not where
 # to look instead.
-REAIM_TIMEOUT_S = 15.0
+REAIM_TIMEOUT_S = 2.5    # how long S6 waits for a direction before taking the
+                         # sweep's next-best angle itself.
+                         #
+                         # WAS 15, which assumed the person being asked could
+                         # answer. They cannot: during S6 the CoreS3 draws only
+                         # STOP, and `reaim` arrives solely from the web UI's pan
+                         # buttons or the researcher's z/x/c/v/b -- so the tap is
+                         # a one-way channel. The robot shook its head, asked
+                         # "which one then?", and stood motionless for 12.6 s
+                         # waiting for an answer nobody in the room could give.
+                         # Held still that long it does not read as waiting, it
+                         # reads as broken.
+                         #
+                         # 2.5 s is S6's own clip (2.37 s) plus a margin, so the
+                         # shake IS the wait: it says "not that one" and acts on
+                         # it. Nothing is lost -- `reaim` is also accepted in
+                         # S5B_TRACK, so a researcher who clicks a moment later
+                         # still steers it, and that path already existed for
+                         # exactly this case.
+                         #
+                         # RAISE THIS AGAIN if the participant is ever given a
+                         # way to answer. The number encodes who is being asked.
 
 # STOP is a CANCEL, not a pause: the watch-spec is discarded and PTT starts a
 # fresh request. Worth being explicit, because "returns to idle" alone leaves it
@@ -407,9 +536,26 @@ def bad_state_literals(root=None):
                 if line.strip().startswith("#"):
                     continue
                 for m in pat.finditer(line):
-                    if m.group(1) not in STATES:
-                        out.append(f"{os.path.relpath(path, root)}:{i}: "
-                                   f"{m.group(1)!r} is not a state")
+                    name = m.group(1)
+                    if name in STATES:
+                        continue
+                    # A CONSTANT IN THIS MODULE IS NOT A MISTYPED STATE. The
+                    # pattern is "S<digit>..." because that is what a state name
+                    # looks like, and the tuning constants share the prefix by
+                    # design -- S7_IGNORED_TIMEOUT_S, S8_RECOVER_S. Reaching one
+                    # by name (getattr(ST, "S8_RECOVER_S", 0), which is how the
+                    # optional ones are read so that deleting a constant turns
+                    # its feature off rather than crashing) put a legitimate
+                    # string literal in front of a scanner looking for typos.
+                    #
+                    # Resolving against this module's own globals is the right
+                    # test rather than a hardcoded skip-list: it stays true when
+                    # constants are added, and it still catches a MISSPELLED one,
+                    # which is the failure this whole function exists for.
+                    if name in globals():
+                        continue
+                    out.append(f"{os.path.relpath(path, root)}:{i}: "
+                               f"{name!r} is not a state")
     return out
 
 

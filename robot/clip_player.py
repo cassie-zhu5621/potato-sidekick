@@ -33,6 +33,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))))
 from robot.scs import Bus, open_bus
 from robot.pose import (JOINTS, IDS, CENTER, UNITS_PER_DEG, resolve, centre_units,
+                       reach_deg, clamp_deg,
                   unit_to_deg,
                   move_ms, REAIM_DPS, COLLAPSE_DPS)
 from robot import states as ST
@@ -80,6 +81,122 @@ def trim_s4_return(frames, pan_slop_units=2):
             cut = i
             break
     return frames[:cut]
+
+
+def shift_pan_centre(frames, to_deg, verbose=True):
+    """Translate a clip's whole pan track so its centre lands on `to_deg`.
+
+    For a clip whose pan is a SHAPE rather than a bearing. S6 shakes horizontally
+    -- that shake is the negation, "not that one" -- and it was authored around
+    +25 because it was drawn as a continuation of watching. Where the shake sits
+    is a separate question from what it does, and only the first one moves here.
+
+    A TRANSLATION, NOT A REMAP. `remap_share_pan` rescales between two plateaus,
+    which is right when a clip crosses between two named places; applied to a
+    shake it would change the amplitude, and S6's amplitude is calibrated against
+    the pan floor (1.76 deg) -- scale it down and the negation stops registering
+    as movement at all. Adding a constant cannot do that: every excursion, every
+    velocity and the whole clock survive untouched.
+
+    The centre is taken as the MIDPOINT OF THE TRAVEL, not the first frame. A
+    shake starts at one end of its own swing, so the first frame is an extreme;
+    centring on it would leave the gesture lopsided about the person by half the
+    amplitude.
+    """
+    if not frames:
+        return frames
+    pans = [unit_to_deg("pan", f["pan"]) for f in frames]
+    centre = (min(pans) + max(pans)) / 2.0
+    delta = float(to_deg) - centre
+    if abs(delta) < 0.05:
+        return frames
+    out = []
+    clamped = 0
+    for f, p in zip(frames, pans):
+        g = dict(f)
+        # Same deg -> raw -> commanded path as remap_share_pan's to_unit(), so
+        # the two retargeters cannot drift apart by half a unit.
+        u, was = resolve("pan", max(0, min(1023,
+                         round(((p + delta) + 150.0) / 300.0 * 1023))))
+        clamped += bool(was)
+        g["pan"] = u
+        out.append(g)
+    if verbose:
+        print(f"[face] pan centre {centre:+.1f} -> {to_deg:+.1f} deg "
+              f"({delta:+.1f}), shape unchanged"
+              + (f"   !! {clamped} frames CLAMPED -- the person is outside the "
+                 f"pan limits from here" if clamped else ""))
+    return out
+
+
+def remap_share_pan(frames, user_deg, object_deg, ceiling_dps=120.0,
+                    verbose=True):
+    """Move S7's two authored pan plateaus onto the real ones.
+
+    S7a and S7b are authored between a template user (+60) and a template object
+    (-25). Neither is where anything actually is. The object leg is wherever S5b
+    was watching when the finding fired; the user leg is wherever the person is
+    sitting, which in a lab is known and fixed.
+
+    WHY A LINEAR REMAP AND NOT set_pan_deg. set_pan_deg replaces the pan channel
+    wholesale, which is only safe when it is a CONSTANT (S5_TRACK, S5A_SETTLE).
+    S7's pan is the gesture: it crosses between two plateaus, twice per cycle in
+    S7b, with eased transits and a 4-degree overshoot past the user. Replacing it
+    would delete the alternation. Stretching it in time would rewrite the rhythm,
+    and in S7b the rhythm IS the message.
+
+    So: map the VALUE, leave the CLOCK alone. Every sample is placed at the same
+    fraction of the new span as it held of the old one, which preserves the ease
+    curves exactly and scales the overshoot in proportion -- it stays 4/85 of the
+    crossing rather than becoming a fixed 4 degrees that means something different
+    at every distance.
+
+    THE ONE THING THAT CANNOT BE LEFT ALONE IS SPEED. A wider real span covers
+    more degrees in the same frames, so the peak scales with it. Past the ceiling
+    the servos simply cannot follow, and the failure is silent: the clip arrives
+    late and the alternation loses its beat. So a span that would overrun is given
+    proportionally more time -- the whole clip, so every beat keeps its relative
+    weight. A NARROWER span is NOT sped up: slower than authored is safe, and
+    compressing it would be a second design decision nobody made.
+    """
+    t_user = ST.SHARE_TEMPLATE["user"]
+    t_obj = ST.SHARE_TEMPLATE["object"]
+    t_span = t_user - t_obj
+    r_span = user_deg - object_deg
+    if abs(t_span) < 1e-6:
+        return frames
+
+    def to_unit(deg):
+        return resolve("pan", max(0, min(1023,
+                       round((deg + 150.0) / 300.0 * 1023))))[0]
+
+    out = []
+    for f in frames:
+        g = dict(f)
+        frac = (unit_to_deg("pan", f["pan"]) - t_obj) / t_span
+        g["pan"] = to_unit(object_deg + frac * r_span)
+        out.append(g)
+
+    # Peak is measured on the RESULT, not predicted from the ratio: the clip is
+    # already quantised to servo units, so the arithmetic answer and the commanded
+    # one differ by a few deg/s and it is the commanded one that has to be safe.
+    peak = 0.0
+    for a, b in zip(out, out[1:]):
+        dt = b["t"] - a["t"]
+        if dt > 0:
+            peak = max(peak, abs(unit_to_deg("pan", b["pan"])
+                                 - unit_to_deg("pan", a["pan"])) / dt)
+    stretch = peak / ceiling_dps if peak > ceiling_dps else 1.0
+    if stretch > 1.0:
+        for g in out:
+            g["t"] *= stretch
+    if verbose:
+        print(f"[share] pan remapped: object {t_obj:+.0f}->{object_deg:+.0f}, "
+              f"user {t_user:+.0f}->{user_deg:+.0f} "
+              f"(span {t_span:+.0f}->{r_span:+.0f}), peak {peak:.0f} deg/s"
+              + (f", stretched x{stretch:.2f} to stay under {ceiling_dps:.0f}"
+                 if stretch > 1.0 else ""))
+    return out
 
 
 def load_clip(path, loops=False):
@@ -154,6 +271,8 @@ class ClipPlayer:
         self._pan_override = None
         self._pan_pending = None      # armed now, applied when S5B_TRACK begins
         self._next_override = None    # armed now, consumed by the next `then`
+        self._user_pan = None         # where the person is; None = play S7 as authored
+        self._warned_no_user_pan = False   # warn once per run, not once per S7
         self.clips = {}
         for fn in sorted(os.listdir(clips_dir)):
             if fn.endswith(".csv"):
@@ -251,6 +370,42 @@ class ClipPlayer:
         """
         self._pan_pending = resolve(
             "pan", max(0, min(1023, round((deg + 150.0) / 300.0 * 1023))))[0]
+
+    def set_user_pan(self, deg):
+        """Where the person is sitting, in Blender degrees. None = as authored.
+
+        Set once per session from the web UI. In a lab the participant's seat is
+        fixed and known, so this is the honest way to get it -- far better than
+        inferring it from a face detection that will lose the person the moment
+        they look away, which is exactly when S7 needs to know where to call.
+
+        Only S7a and S7b use it: they are the only clips whose pan CROSSES
+        between two named places. Everything else either holds a bearing or
+        sweeps a range, and neither is about a person.
+        """
+        # CLAMP HERE, AND STORE THE CLAMPED VALUE. Not at playback: the S7 remap
+        # computes a SPAN from this number, so an unreachable one does not merely
+        # fail to be reached -- it rescales the crossing, and the OBJECT leg lands
+        # somewhere the finding is not. A seat behind the robot would move the
+        # thing it is pointing at.
+        #
+        # The body reaches about -68..+70. There is no facing behind it, and no
+        # setting in this file can add one.
+        if deg is None:
+            val = None
+        else:
+            val, was = clamp_deg("pan", deg)
+            if was and self.verbose:
+                lo, hi = reach_deg("pan")
+                print(f"[share] !! user pan {float(deg):+.0f} deg is outside the "
+                      f"body's reach ({lo:+.0f}..{hi:+.0f}); locking {val:+.1f} "
+                      f"instead. If the person really is there, S7 cannot face "
+                      f"them -- move the seat, not this number.")
+        with self._lock:
+            self._user_pan = val
+        if self.verbose:
+            print(f"[share] user pan "
+                  f"{'cleared' if val is None else f'{val:+.1f} deg'}")
 
     def arm_next(self, state):
         """Override the NEXT `then`, once. Consumed when a one-shot finishes.
@@ -487,6 +642,57 @@ class ClipPlayer:
 
             spec = ST.STATES[nxt]
             frames = self.clips[spec["clip"]]
+            # S7 is the only gesture that names two places, and the two are known
+            # in DIFFERENT WAYS. Keeping that distinction is the whole point:
+            #
+            #   THE PERSON  is a setting. In a lab the seat is fixed and known
+            #               before anyone sits in it, so it is locked by hand
+            #               (web UI / set_user_pan) and defaults to the angle S2
+            #               and S3 are authored at. Never inferred from a face
+            #               detection, which loses the person exactly when they
+            #               look away -- which is when S7 needs to know.
+            #   THE FINDING is a measurement. It is wherever S5b was actually
+            #               aimed when the finding fired, and self.cur still
+            #               holds it because S7a is entered straight from S5b.
+            #
+            # THE REMAP NOW ALWAYS RUNS. It used to be gated on the user angle
+            # being set, so with no seat locked the OBJECT leg also fell back to
+            # the authored -25 -- the robot pointing at a template angle while it
+            # knew perfectly well where it had just been looking. One unknown was
+            # discarding the other one's answer.
+            if nxt in ("S7a", "S7b"):
+                seat = (self._user_pan if self._user_pan is not None
+                        else ST.USER_PAN_AUTHORED)
+                frames = remap_share_pan(
+                    frames, seat, unit_to_deg("pan", self.cur["pan"]),
+                    verbose=self.verbose)
+            elif nxt in ST.USER_FACING:
+                # Face the person, wherever they actually are. The clip's own pan
+                # is a CENTRE the gesture is drawn around -- S6 shakes, so the
+                # track is a shape, not a bearing -- and only that centre moves.
+                # Translating keeps the shake's amplitude and timing exactly as
+                # authored, which a two-point remap would not.
+                to = (self._user_pan if self._user_pan is not None
+                      else ST.USER_PAN_AUTHORED)
+                frames = shift_pan_centre(frames, to, verbose=self.verbose)
+            if (nxt in ("S7a", "S7b") and self._user_pan is None
+                    and not self._warned_no_user_pan):
+                # Said once, because the default is a guess about the ROOM and
+                # only the researcher can confirm it. It is a defensible guess --
+                # S2 and S3 turned to this angle to listen, in front of the
+                # person -- but a guess that is never mentioned becomes a fact
+                # nobody remembers choosing.
+                self._warned_no_user_pan = True
+                print(f"[share] no seat locked -- S7 will beckon to "
+                      f"{ST.USER_PAN_AUTHORED:+.0f} deg, the angle S2/S3 are "
+                      f"authored at. Lock the real one in the web UI (ROBOT tab) "
+                      f"if the participant is not there.")
+                print(f"[share] !! no user pan set -- {nxt} will play at the "
+                      f"authored template {ST.SHARE_TEMPLATE['user']:+.0f} deg. "
+                      f"S2/S3 are authored at -30. If the person is not at "
+                      f"{ST.SHARE_TEMPLATE['user']:+.0f}, the beckon points the "
+                      f"wrong way. Set it in the web UI (ROBOT tab) or call "
+                      f"set_user_pan().")
             first = {j: frames[0][j] for j in JOINTS}
             # A re-aim only applies to the clips it was aimed at; entering anything
             # else clears it, so an old override cannot silently steer a later state.

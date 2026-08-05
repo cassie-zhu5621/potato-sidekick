@@ -92,7 +92,12 @@ class SessionFlow:
         self._s7_at = None           # in S7b since
         self._reaim_at = None        # in S6 awaiting a direction since
         self.stt_busy = False        # set by the loop while Whisper is running
+        self.judge_busy = False      # set by the loop while a candidate is being judged
         self.plan_pending = False    # a VLM call is out; the direction is unknown
+        self._plan_at = None         # when it went out, for PLAN_TIMEOUT_S
+        self._watch_since = None     # watching this angle since, for REPLAN_IDLE_S
+        self._s8_at = None           # in S8 since, for S8_RECOVER_S
+        self._planned_at = None      # the last plan LANDED at, for REPLAN_PERIOD_S
         self.out = []
 
     # ---------------- helpers ----------------
@@ -107,6 +112,27 @@ class SessionFlow:
         if why:
             self._emit("log", f"{state}: {why}")
         self._s7_at = self.now() if state == "S7b" else None
+        # The idle clock is per-ANGLE, not per-session: it asks "has this aim
+        # produced anything", so it restarts every time watching is (re-)entered
+        # and stops whenever the robot is doing something else.
+        self._watch_since = self.now() if state == "S5B_TRACK" else None
+        self._s8_at = self.now() if state == "S8_ERROR" else None
+
+    def _replan(self, why):
+        """Re-fire S4 on the request already on record.
+
+        NOT via S3_ACK. S3 is "I heard you", and nobody has said anything -- the
+        robot would be acknowledging a sentence that was never spoken. This is the
+        robot deciding on its own to go and look again, so it goes straight to the
+        sweep. `plan` re-arms the sweep loop-side and bumps plan_generation.
+        """
+        if not self.transcript:
+            return                    # nothing has ever been asked; nothing to redo
+        self.plan_pending = True
+        self._plan_at = self.now()
+        self._planned_at = None
+        self._emit("plan", self.transcript)
+        self._go("S4_PLAN", why)
 
     def _ui(self, screen):
         self.screen = screen
@@ -181,6 +207,7 @@ class SessionFlow:
             if ok:
                 self.transcript = arg.strip()
                 self.plan_pending = True
+                self._plan_at = self.now()
                 self._emit("plan", self.transcript)
                 self._go("S3_ACK", f"{'typed' if manual else 'heard'} "
                                    f"{self.transcript!r}")
@@ -249,7 +276,15 @@ class SessionFlow:
         if ev == "planned":
             # The VLM has answered: the direction and the watch-spec now exist.
             self.plan_pending = False
+            self._plan_at = None
+            self._planned_at = self.now()
+            # The idle clock starts when there is something to watch FOR. S5b is
+            # usually already entered by now -- S4's clip ends before the VLM
+            # does -- so _go's reset happened while the spec was still in flight,
+            # and 30 s of "seeing nothing" would have been counted against an
+            # angle the robot had no criteria for yet.
             if self.state == "S5B_TRACK":
+                self._watch_since = self.now()
                 self._ui("tracking")
             return self.out
 
@@ -258,6 +293,7 @@ class SessionFlow:
             # remote error comes back. Never leave the participant looking at a
             # permanent "planning..." screen: make the failure explicit.
             self.plan_pending = False
+            self._plan_at = None
             self._go("S8_ERROR", f"planner failed: {arg}")
             return self.out
 
@@ -277,6 +313,7 @@ class SessionFlow:
                     screen = "planning"
                 self._ui(screen)
                 self._s7_at = self.now() if arg == "S7b" else None
+                self._s8_at = self.now() if arg == "S8_ERROR" else None
             return self.out
 
         if ev == "tick":
@@ -294,6 +331,17 @@ class SessionFlow:
                 # the middle of successfully transcribing. `hard` is the ceiling:
                 # busy may postpone, it may not postpone indefinitely.
                 self._ptt_up_at = t
+            # A planner that never answers. Checked BEFORE the STT deadline
+            # because they cannot both be live: the transcript is what starts the
+            # plan, so by the time this is armed the STT one is already cleared.
+            if (self.plan_pending and self._plan_at is not None
+                    and t - self._plan_at > ST.PLAN_TIMEOUT_S):
+                self.plan_pending = False
+                self._plan_at = None
+                self._go("S8_ERROR", "no plan within "
+                                     f"{ST.PLAN_TIMEOUT_S:.0f}s -- the VLM never "
+                                     f"answered")
+                return self.out
             if self._ptt_up_at is not None and (
                     hard or t - self._ptt_up_at > ST.STT_TIMEOUT_S):
                 self._ptt_up_at = self._ptt_up_first_at = None
@@ -318,6 +366,72 @@ class SessionFlow:
                 self._go("S5B_TRACK", f"ignored for "
                                      f"{ST.S7_IGNORED_TIMEOUT_S:.0f}s -- "
                                      f"already in the feed, back to watching")
+            # ---- S8 gives up on its own. `exit: STOP only` assumed a reader
+            # who could press STOP; a participant cannot, and cannot name what
+            # broke either. Returning to S1 is not pretending it did not happen
+            # -- S1 is "present, not attending", which is the truthful state
+            # after a failure the robot has stopped trying to fix. The reason is
+            # already in the log and on the researcher's screen.
+            elif (self.state == "S8_ERROR"
+                    and getattr(ST, "S8_RECOVER_S", 0)
+                    and self._s8_at is not None
+                    and t - self._s8_at > ST.S8_RECOVER_S):
+                self._s8_at = None
+                # Everything in flight is abandoned. A transcript or plan that
+                # arrives after this must not resurrect a turn the robot has
+                # visibly ended -- the person watched it give up.
+                self.plan_pending = False
+                self._plan_at = self._ptt_up_at = self._ptt_up_first_at = None
+                self._go("S1_IDLE", f"gave up after {ST.S8_RECOVER_S:.0f}s in "
+                                    f"S8 -- back to idle, ready to be asked again")
+            # ---- S4 re-fires. states.py has documented these two since the
+            # state table was written and NOTHING READ THEM: the constants were
+            # defined, commented, referenced by a Blender preview's comment, and
+            # never wired. So the robot watched one angle until someone tapped
+            # it, which is exactly what was observed -- 30 s passes, 5 min
+            # passes, and it keeps looking at the same wall.
+            #
+            # Only from S5B_TRACK. S6 is a correction in progress and S7 is a
+            # report being delivered; interrupting either to go and sweep would
+            # abandon a turn the person is part of. Not while plan_pending
+            # either -- one sweep is already out.
+            #
+            # PERIOD IS CHECKED FIRST. If both are due the structural reason is
+            # the stronger one: "the room may have changed" subsumes "this angle
+            # is quiet", and logging it as the idle case would misreport why.
+            elif self.judge_busy and self.state == "S5B_TRACK":
+                # A JUDGE IN FLIGHT IS NOT AN EMPTY ANGLE. The idle clock asks
+                # "has this aim produced anything"; a candidate under judgement
+                # is something it produced, still waiting on a verdict. Letting
+                # the clock run through that re-plans mid-call, bumps
+                # plan_generation, and the answer -- when it arrives -- is
+                # discarded as stale.
+                #
+                # Observed on hardware 2026-08-05: a judge started at 15:01:10,
+                # the 60 s timer fired while it ran, and the reply at 15:03:04
+                # (`selected_index: 0`, both cards confirmed, "The user is
+                # holding and reading a book") was thrown away by
+                # `[confirm] stale candidate discarded`. A correct finding, a
+                # correct judgement, deleted by a clock that was measuring the
+                # wrong thing.
+                #
+                # Postponed, not cancelled -- the same shape as stt_busy above:
+                # busy may push the deadline out, it may not remove it.
+                self._watch_since = t
+            elif (self.state == "S5B_TRACK" and not self.plan_pending
+                    and self.transcript):
+                per = getattr(ST, "REPLAN_PERIOD_S", 0) or 0
+                idle = getattr(ST, "REPLAN_IDLE_S", 0) or 0
+                if (per and self._planned_at is not None
+                        and t - self._planned_at > per):
+                    self._replan(f"{per:.0f}s since the last plan -- sweeping "
+                                 f"again; anything that entered the room since "
+                                 f"has never been in the candidate set")
+                elif (idle and self._watch_since is not None
+                        and t - self._watch_since > idle):
+                    self._replan(f"nothing at this angle for {idle:.0f}s -- "
+                                 f"that is a real detection, not a fault: there "
+                                 f"is nothing here, so look elsewhere")
             return self.out
 
         self._emit("log", f"unknown event {event!r}")

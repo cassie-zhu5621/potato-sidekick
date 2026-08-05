@@ -17,7 +17,28 @@ from __future__ import annotations
 import json, os, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+# user_pan: where the participant is sitting, in Blender degrees. Locked by hand
+# from the panel below, once, at the start of a session -- the seat is fixed and
+# known, so asking a detector to rediscover it every frame would be inventing
+# uncertainty. None = S7 plays at its authored template angles.
+def _pan_reach():
+    """(min, max) degrees the body can turn to, or None if calibration is absent.
+
+    Wrapped in a try because the web UI is also opened against recorded sessions
+    on machines with no robot config, and a seat row that fails to render is a
+    worse outcome than one that falls back to its defaults.
+    """
+    try:
+        from robot.pose import reach_deg
+        lo, hi = reach_deg("pan")
+        return [round(lo, 1), round(hi, 1)]
+    except Exception:
+        return None
+
+
+# pending_user_pan: the loop drains this and hands it to the player.
 STATE = {"jpg": None, "feed": [], "thumbs": {}, "frames": {},
+         "user_pan": None, "pending_user_pan": "unset",
          "context": "", "why": "", "entries": [],      # [(expr, label)]
          "status": [],                                  # [dict per entry: see build_status]
          "judgments": {},                               # label -> candidate/judging/result
@@ -198,6 +219,8 @@ PAGE = """<!doctype html><html><head><meta charset=utf-8><title>attention system
     <img id=v src="/stream.mjpg">
     <h3>AIM — where it watches (developer)</h3>
     <div class=aim id=aim></div>
+    <h3>USER — where the person is sitting</h3>
+    <div class=aim id=userpan></div>
     <h3>DESCRIBE THE SCENE — it will re-plan</h3>
     <input id=c placeholder='e.g. "two of us are assembling a robot arm this afternoon"'>
     <div class=heard id=heard></div>
@@ -313,6 +336,7 @@ async function poll(){
           ${compose(s)}${j&&j.note?`<div class=detail>${j.note}</div>`:''}</div>`;
       }).join('');
     document.getElementById('aim').innerHTML = renderAim(p);
+    document.getElementById('userpan').innerHTML = renderUserPan(p);
     const h=document.getElementById('heard');
     h.innerHTML = p.transcript ? `heard: <b>${p.transcript}</b>`
                               : '<span class=none>nothing heard yet</span>';
@@ -361,6 +385,41 @@ function renderAim(p){
   }).join('');
   return btns + `<button class="panbtn next" onclick="aimSet('next')"
       title="the next-best angle the sweep scored">next best ▸</button>`;
+}
+function userPanSet(deg){
+  fetch('/user_pan',{method:'POST',body:''+deg});
+}
+function renderUserPan(p){
+  // Lock this once, after the participant has chosen where to put the robot.
+  // Only S7 uses it: it is the only gesture that names two places -- "you" and
+  // "that" -- so it is the only one that has to be told where they are.
+  const now = p.user_pan;
+  // The row stops where the BODY stops. Pan reaches about -68..+70 on this
+  // mount, so there are no seats at -90 or +120 to offer: both would clamp to
+  // the same edge this row already ends on, and the button would be a label for
+  // a bearing the robot cannot hold. Worse than useless -- S7 computes its
+  // crossing FROM this number, so an unreachable seat rescales the whole
+  // gesture and moves the object leg too.
+  //
+  // Reach is read from the live calibration, so re-jogging the pan horn moves
+  // these buttons instead of quietly invalidating them.
+  const lo = (p.pan_reach && p.pan_reach[0] != null) ? p.pan_reach[0] : -67;
+  const hi = (p.pan_reach && p.pan_reach[1] != null) ? p.pan_reach[1] :  69;
+  const inner = [-60,-45,-30,-15,0,15,30,45,60].filter(d => d > lo && d < hi);
+  const seats = [Math.ceil(lo), ...inner, Math.floor(hi)];
+  const btns = seats.map(d=>{
+    const on = (now!=null && Math.abs(d-now)<1.5);
+    const edge = (d<=Math.ceil(lo) || d>=Math.floor(hi));
+    return `<button class="panbtn ${on?'on':''}" onclick="userPanSet(${d})"
+      title="${edge?'as far as the body turns — there is no facing past this'
+                  :'seat at '+d+'°'}">
+      ${d>0?'+':''}${d}°${edge?'▐':''}</button>`;
+  }).join('');
+  const state = now==null
+    ? `<span class=sc>not set — S7 uses the authored +60, S6 faces −30</span>`
+    : `<span class=sc>locked at ${now>0?'+':''}${now}°</span>`;
+  return btns + `<button class="panbtn next" onclick="userPanSet('clear')"
+      title="back to the authored template">clear</button> ` + state;
 }
 function panTag(p){ return (p==null?'—':(p>0?('+'+p):(''+p))+'°'); }
 function renderSweeps(list){
@@ -436,7 +495,11 @@ class H(BaseHTTPRequestHandler):
                         "states": STATE["states"],
                         "suppressed": STATE["suppressed"],
                         "collecting": STATE["collecting"],
-                        "pan_now": STATE["pan_now"], "pan_scores": STATE["pan_scores"]}
+                        "pan_now": STATE["pan_now"], "pan_scores": STATE["pan_scores"],
+                        "user_pan": STATE["user_pan"],
+                        # Sent, not hard-coded in the page, so re-jogging the pan
+                        # horn moves the seat buttons with it.
+                        "pan_reach": _pan_reach()}
             self._send(200, "application/json", json.dumps(data).encode())
         elif p == "/feed.json":
             with LOCK:
@@ -508,6 +571,13 @@ class H(BaseHTTPRequestHandler):
             val = self.rfile.read(n).decode("utf-8", "ignore").strip()
             with LOCK:
                 STATE["pending_pan"] = val      # "next" or a number, in degrees
+            self._send(200, "application/json", b'{"ok": true}')
+        elif self.path == "/user_pan":
+            raw = self.rfile.read(int(self.headers.get("Content-Length", 0))
+                                  ).decode("utf-8", "ignore").strip()
+            with LOCK:
+                val = None if raw in ("", "none", "clear") else float(raw)
+                STATE["user_pan"] = STATE["pending_user_pan"] = val
             self._send(200, "application/json", b'{"ok": true}')
         elif self.path == "/context":
             n = int(self.headers.get("Content-Length", 0))

@@ -517,7 +517,7 @@ def _grounding_dino_detections(result, vocabulary) -> List[Detection]:
 
 def make_detector(kind: str, vocabulary: List[str], conf: float = 0.3, device: str = None):
     """Factory so callers can swap detectors. Grounding DINO is the default."""
-    kind = (kind or "gdino").lower()
+    kind = (kind or "yoloworld").lower()   # see noticebot_loop --detector
     if kind in ("yoloworld", "world", "yw"):
         return YoloWorldDetector(vocabulary, conf=conf, device=device)
     if kind in ("yolo", "coco", "closed"):

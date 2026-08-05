@@ -33,7 +33,7 @@ Run:
   python3 noticebot_loop.py --cam 0 --no-view          # headless
 """
 from __future__ import annotations
-import argparse, json, os, sys, threading, time
+import argparse, datetime as dt, json, os, sys, threading, time
 from collections import deque
 
 import cv2
@@ -49,6 +49,9 @@ from robot.pose import UNITS_PER_DEG, resolve
 from session.session_flow import SessionFlow, transcript_usable 
 from planning.event_frames import select_temporal_frames
 from perception.watch_exec import order_coincident_candidates
+# Module level: the loop names the provider in five places, all inside
+# functions. A nested import satisfies neither them nor pyflakes.
+from planning.provider import provider_name
 
 # The five S4 stations, as keyboard stand-ins for the web UI's pan buttons. Used
 # in S6 to re-aim: the tap said "wrong direction", not "wrong task", so only the
@@ -307,7 +310,12 @@ def main():
     ap.add_argument("--no-cv", action="store_true",
                     help="no detector/pose/relations. THE PLAN panel stays empty "
                          "and findings come only from the 'f' key.")
-    ap.add_argument("--detector", default="gdino",
+    # yoloworld, not gdino. Settled: ~4 Hz against gdino's ~1 Hz on the study
+    # laptop, and it goes through ultralytics instead of transformers -- whose
+    # version is unpinned and whose tokenizer failed with a TextEncodeInput error
+    # that mentions neither vocabularies nor versions. gdino stays selectable so
+    # old logs remain reproducible; it is not the path anything is run on.
+    ap.add_argument("--detector", default="yoloworld",
                     choices=["yolo", "yoloworld", "gdino", "mock"])
     ap.add_argument("--vocab", default="person,laptop,chair,cup,bottle,book,"
                                        "cell phone,backpack,keyboard,mouse")
@@ -366,8 +374,12 @@ def main():
                     "NOTICEBOT_GEMINI_MODEL", "gemini-3.5-flash"),
                 "thinking_level": os.environ.get(
                     "NOTICEBOT_GEMINI_THINKING_LEVEL", "minimal"),
+                # None = the field is not sent and the service decides. Recorded
+                # as it is ACTUALLY sent: this said "low" whenever the variable
+                # was unset, which is a run.json asserting a request that was
+                # never made.
                 "media_resolution": os.environ.get(
-                    "NOTICEBOT_GEMINI_MEDIA_RESOLUTION", "low"),
+                    "NOTICEBOT_GEMINI_MEDIA_RESOLUTION") or None,
                 "service_tier": os.environ.get(
                     "NOTICEBOT_GEMINI_SERVICE_TIER", "priority"),
             },
@@ -375,6 +387,37 @@ def main():
     print(f"[run] artifacts -> {a.feed_dir}")
 
     def audit_write(kind, payload, images=()):
+        # WHO ANSWERED, AND WHEN IT STARTED. Neither was recorded, and both were
+        # needed the first time anyone read these files seriously:
+        #
+        #   provider/model -- the record held `latency_s` but not who produced
+        #     it, so comparing a slow evening against a fast morning could not
+        #     distinguish "the service got better" from "we changed provider".
+        #     Only sweeps/plan.json carried it, and only for sweeps.
+        #   started_at -- the DIRECTORY NAME is written after the call returns,
+        #     so it is a FINISH time. Reading it as a start time makes calls look
+        #     like they overlap: a 97 s judge appears to still be running when
+        #     the next one begins. They were serialised correctly the whole time.
+        if isinstance(payload, dict):
+            try:
+                from planning.provider import provider_name, model_name
+                payload.setdefault("provider", provider_name())
+                payload.setdefault("model", model_name())
+            except Exception:
+                pass
+            # Token usage, when the provider reports it. See gemini_provider.
+            try:
+                from planning import gemini_provider as _gp
+                if _gp.LAST_USAGE:
+                    payload.setdefault("usage", dict(_gp.LAST_USAGE))
+            except Exception:
+                pass
+            lat = payload.get("latency_s")
+            if isinstance(lat, (int, float)):
+                payload.setdefault(
+                    "started_at",
+                    dt.datetime.fromtimestamp(time.time() - lat).isoformat(
+                        timespec="milliseconds"))
         stamp = time.strftime("%Y%m%d_%H%M%S_") + f"{time.time_ns() % 1_000_000_000:09d}"
         out = os.path.join(audit_dir, f"{kind}_{stamp}")
         with audit_lock:
@@ -606,6 +649,10 @@ def main():
             # should not be the last to know what the robot just acknowledged.
             ctxd["request"] = val
             ctxd["plan_generation"] = int(ctxd.get("plan_generation", 0)) + 1
+            if story is not None:
+                # Stamp the feed so each finding names the request it answers.
+                story.request = val
+                story.plan_generation = ctxd["plan_generation"]
             if view is not None:
                 view.transcript = val
                 view.context = val
@@ -646,7 +693,26 @@ def main():
             candidate_gate["winner"] = None
             print("[flow] watching stopped -- plan cleared")
         elif kind == "pan_next":
-            deg, sc = next_best_pan(player.snapshot()["pose_deg"]["pan"])
+            # EXCLUDE THE ANGLE THAT WAS REJECTED, NOT THE ONE THE HEAD IS AT.
+            #
+            # This passed the head's live pose, which worked only by accident:
+            # S6 used to play at +25, near the watching aim, so "where the head
+            # is" and "what the person rejected" were the same number. S6 now
+            # turns to FACE THE PERSON (-30) to be corrected, so the head is
+            # nowhere near the rejected angle -- and the rejected angle, still
+            # the highest scoring station, came straight back as the answer.
+            #
+            # Observed on hardware: three taps in a row, three times
+            # "[aim] nobody answered; moving to pan +30" while already watching
+            # +30. The tap did nothing, which is the one response a rejection
+            # must never get.
+            #
+            # `aimed_pan` is the watching aim -- set by the sweep's choice and by
+            # every re-aim -- so it is what the tap was about.
+            rejected = ctxd.get("aimed_pan")
+            if rejected is None:
+                rejected = player.snapshot()["pose_deg"]["pan"]
+            deg, sc = next_best_pan(rejected)
             if deg is None:
                 print("[aim] no other angle available -- holding")
             else:
@@ -683,7 +749,7 @@ def main():
                     "latency_s": round(time.monotonic() - started, 3),
                     "response": r,
                 }, jpegs or [])
-                print(f"[timing] Gemini planner attempt {planner_attempt}: "
+                print(f"[timing] {provider_name()} planner attempt {planner_attempt}: "
                       f"{time.monotonic() - started:.2f}s")
                 if r.get("spec") is None or r.get("violations"):
                     print("[planner] invalid result; retrying once ...")
@@ -697,7 +763,7 @@ def main():
                         "latency_s": round(time.monotonic() - started, 3),
                         "response": r,
                     }, jpegs or [])
-                    print(f"[timing] Gemini planner attempt {planner_attempt}: "
+                    print(f"[timing] {provider_name()} planner attempt {planner_attempt}: "
                           f"{time.monotonic() - started:.2f}s")
                 return r
 
@@ -707,7 +773,8 @@ def main():
                 print("[planner] stale result discarded")
                 return
             if (res or {}).get("spec") is None or v:
-                raise ValueError("invalid Gemini plan: " + "; ".join(map(str, v)))
+                raise ValueError(f"invalid plan from {provider_name()}: "
+                                 + "; ".join(map(str, v)))
             ctxd["spec"] = res["spec"]
             print(f"[planner] {len(v)} violation(s); "
                   f"watch={len((ctxd['spec'] or {}).get('watch', []) or [])} entries")
@@ -798,11 +865,41 @@ def main():
     event_frames = cam.event_frames if cam is not None else deque(maxlen=40)
     event_candidates = []                 # wait through t+1.0 before Gemini confirm
     confirmed_findings = []               # worker -> main-loop handoff
-    candidate_gate = {"busy": False, "winner": None}
+    # TWO JOBS, TWO FIELDS. `busy` used to mean both "a candidate is queued"
+    # and "a judge is in flight", and every release cleared both -- including
+    # `kind == "plan"`, which runs on every re-plan. With REPLAN_IDLE_S at 60 s
+    # that opened the gate on a schedule, regardless of whether a call was still
+    # out, so the next fired group started a SECOND concurrent judge.
+    #
+    # Measured, e2e_20260805_150019, all gemini, interleaved with a planner that
+    # stayed flat at 5-17 s:
+    #     judge1 15:01:09 -> 15:03:04
+    #     judge2 15:02:10 -> 15:03:51   (started inside judge1)
+    #     judge3 15:03:21 -> 15:04:02   (started inside judge2)
+    #     ... up to three at once, latency 114 -> 197 -> 278 s
+    # Self-reinforcing: a slower judge is more likely to still be running when
+    # the next re-plan releases the gate, which adds another concurrent call.
+    #
+    # `inflight` is owned by the worker alone -- incremented before the call,
+    # decremented in a finally -- so no unrelated event can open the gate on a
+    # request that has not come back.
+    candidate_gate = {"busy": False, "winner": None, "inflight": 0}
     from planning.sweep_plan import Sweep
     sweep = Sweep(feed_dir=a.feed_dir)
     os.makedirs(a.feed_dir, exist_ok=True)
     stt.warm()              # load Whisper now, not under the first participant
+    if not a.offline:
+        # Same reason, one subsystem over: the first Gemini call of a process
+        # pays ~60 s of connection and cold model. Off the main thread, because
+        # the point is that nobody waits for it -- including us.
+        def _warm_gemini():
+            try:
+                from planning.provider import warm, provider_name
+                print(f"[llm] provider: {provider_name()}")
+                warm()
+            except Exception as e:
+                print(f"[gemini] warm-up unavailable: {e}")
+        threading.Thread(target=_warm_gemini, daemon=True).start()
 
     def event_jpegs(onset):
         """Five nearest raw frames at -1,-.5,0,+.5,+1 seconds."""
@@ -821,6 +918,13 @@ def main():
 
     def confirm_candidate_group(candidate):
         """Send every coincident card in one Gemini request; emit one winner."""
+        candidate_gate["inflight"] += 1
+        try:
+            _confirm_candidate_group(candidate)
+        finally:
+            candidate_gate["inflight"] -= 1
+
+    def _confirm_candidate_group(candidate):
         from planning.judge import (ReportabilityTaste, confirmation_claim,
                                     judge_candidate_group)
         taste = story.taste if story is not None else ReportabilityTaste()
@@ -831,10 +935,15 @@ def main():
         claims = [confirmation_claim(entry) for entry in entries]
         for entry in entries:
             publish_judgment(entry, "judging",
-                             f"Checking {len(entries)} same-moment card(s) in one Gemini call…",
+                             f"Checking {len(entries)} same-moment card(s) in one "
+                             f"{provider_name()} call…",
                              candidate["generation"])
         started = time.monotonic()
-        result = judge_candidate_group(candidate["images"], entries, taste)
+        # The request travels WITH the candidate, not read live: a re-plan
+        # while this call is out would otherwise judge these frames against
+        # a request that arrived after they were captured.
+        result = judge_candidate_group(candidate["images"], entries, taste,
+                                       request=candidate.get("request", ""))
         elapsed = time.monotonic() - started
         audit_write("judge_group", {
             "claims": claims, "entries": entries, "group_size": len(entries),
@@ -843,7 +952,8 @@ def main():
             "latency_s": round(elapsed, 3),
             "result": result,
         }, candidate["images"])
-        print(f"[timing] Gemini group judge ({len(entries)} cards, one call): {elapsed:.2f}s")
+        print(f"[timing] {provider_name()} group judge ({len(entries)} cards, "
+              f"one call): {elapsed:.2f}s")
 
         selected = result.get("selected_index", -1)
         rows = {row.get("index"): row for row in result.get("candidate_results", [])}
@@ -886,6 +996,25 @@ def main():
                 with UI.LOCK:
                     pan_req = UI.STATE.get("pending_pan")
                     UI.STATE["pending_pan"] = None
+                    # Sentinel, not falsiness: 0 degrees is a legitimate seat
+                    # (dead ahead) and `if user_req:` would drop it. Same trap
+                    # that once swallowed EVT LED 0 on the CoreS3.
+                    user_req = UI.STATE.get("pending_user_pan", "unset")
+                    if "pending_user_pan" in UI.STATE:
+                        UI.STATE["pending_user_pan"] = "unset"
+                if user_req != "unset":
+                    # Straight to the player, NOT through the flow: this is a
+                    # calibration of the room, not an event in the session. It
+                    # changes where a gesture points, never which gesture runs.
+                    player.set_user_pan(user_req)
+                    # Echo the value the player KEPT, which is clamped to what
+                    # the body can turn to. Otherwise the page reports a seat
+                    # that does not exist -- and the number a researcher reads
+                    # back off the screen is the one that ends up in the notes.
+                    with UI.LOCK:
+                        UI.STATE["user_pan"] = (
+                            None if player._user_pan is None
+                            else round(player._user_pan, 1))
                 if pan_req:
                     if str(pan_req).strip().lower() == "next":
                         deg, sc = next_best_pan(snap["pose_deg"]["pan"])
@@ -953,8 +1082,27 @@ def main():
                     candidate_gate["busy"] = False
                     candidate_gate["winner"] = None
                     continue
-                if not decision.get("confirmed"):
+                # THE CONFIRMATION IS `selected_index`, NOT A `confirmed` FLAG.
+                #
+                # This read `decision.get("confirmed")`, and the group judge's
+                # schema is
+                #     required: [axes, candidates, selected_index, note, feedback]
+                #     additionalProperties: False
+                # so there is no top-level "confirmed" and the model is forbidden
+                # from inventing one. `.get` returned None every time, so EVERY
+                # successful judgement was discarded one line after it arrived --
+                # S7 could not fire at all. Only the --offline stub returns a
+                # top-level "confirmed", which is why the mechanics looked fine
+                # whenever they were tested without the cloud.
+                #
+                # The question was also already answered upstream: a candidate
+                # only reaches this queue when confirm_candidate_group picked a
+                # winner (`winner is None` returns early). Re-asking it here with
+                # a key that does not exist is how the answer got thrown away.
+                if int(decision.get("selected_index", -1)) < 0:
                     print(f"[confirm] rejected: {decision.get('note', '')}")
+                    candidate_gate["busy"] = False   # or the gate stays shut for
+                    candidate_gate["winner"] = None  # the rest of the session
                     continue
                 feedback = decision.get("feedback") or decision.get("note") or candidate["entry"].get("label")
                 print(f"[FEEDBACK] {feedback}")
@@ -977,6 +1125,7 @@ def main():
             while ui_events:
                 events.append(ui_events.pop(0))
             flow.stt_busy = stt.busy
+            flow.judge_busy = bool(candidate_gate["busy"])
             events.append("tick")
 
             for ev in events:
@@ -1036,7 +1185,7 @@ def main():
             # anything is reported or allowed to enter the S7 feedback motion.
             if fired:
                 entries = [dict(e) for e in order_coincident_candidates(fired)]
-                if candidate_gate["busy"]:
+                if candidate_gate["busy"] or candidate_gate["inflight"]:
                     for entry in entries:
                         publish_judgment(
                             entry, "suppressed",
@@ -1057,6 +1206,11 @@ def main():
                     event_candidates.append({
                         "entries": entries, "onset": now, "due": now + 1.0,
                         "generation": ctxd.get("plan_generation"),
+                        # Captured WITH the candidate, alongside its generation.
+                        # The judge is asked to prefer the card most relevant to
+                        # the request, so it must be the request these frames
+                        # were watched under -- not whatever has been asked since.
+                        "request": ctxd.get("request", ""),
                         "frame": frame.copy() if frame is not None else None,
                     })
 

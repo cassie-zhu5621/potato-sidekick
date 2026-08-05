@@ -151,23 +151,38 @@ expect(("pan", -30.0) in out, "re-aim emits a pan target")
 # S5B -- nothing was decided there, so nothing is performed. S4_S5_DESIGN sec 9.4.
 expect(f.state == "S5A_SETTLE", "an answered re-aim announces the arrival (S5a)")
 
-print("\n--- S6 waits for a direction; a late click still works ---")
+print("\n--- S6 does not wait for an answer nobody can give ---")
+# REAIM_TIMEOUT_S was 15 s, which assumed the person being asked could answer.
+# During S6 the CoreS3 draws only STOP; `reaim` comes solely from the web UI or
+# the researcher's keyboard. So the robot shook its head and stood motionless
+# for 12.6 s waiting on a channel that does not exist. It now acts on its own
+# refusal as soon as the shake is over -- and a later click still steers it,
+# through S5B_TRACK, which is why that path was always accepted there.
 f = flow()
 run(f, ["ptt_down", "ptt_up", "transcript:find the mug",
         "arrived:S4_PLAN", "arrived:S5B_TRACK", "tap"], "")
-CLOCK[0] += 5
+CLOCK[0] += 1.0
 f.feed("tick")
-expect(f.state == "S6_FINETUNE", "still asking at 5s -- does not race the clip")
+expect(f.state == "S6_FINETUNE", "still shaking at 1s -- does not race its clip")
 out = f.feed("reaim:30")
 expect(f.state == "S5A_SETTLE" and ("pan", 30.0) in out,
-       "a direction at 5s lands, and announces the arrival")
+       "a direction DURING the shake is an answer -- S5a announces the arrival")
 
 f = flow()
 run(f, ["ptt_down", "ptt_up", "transcript:find the mug",
         "arrived:S4_PLAN", "arrived:S5B_TRACK", "tap"], "")
-CLOCK[0] += 20
-f.feed("tick")
-expect(f.state == "S5B_TRACK", "no direction in 15s -> watches anyway, not stuck")
+CLOCK[0] += ST.REAIM_TIMEOUT_S + 0.5
+out = f.feed("tick")
+expect(f.state == "S5B_TRACK",
+       f"no answer within {ST.REAIM_TIMEOUT_S:.1f}s -> moves on by itself")
+expect(("pan_next", True) in out, "...to the sweep's next-best angle")
+
+# The same click a moment later must still work. It goes through S5B_TRACK, so
+# there is no S5a arrival beat -- nothing was decided in a turn, so nothing is
+# performed. Losing the beat is the point, not a regression.
+out = f.feed("reaim:30")
+expect(("pan", 30.0) in out and f.state == "S5B_TRACK",
+       "a click AFTER the shake still steers it, quietly")
 
 f = flow()
 run(f, ["ptt_down", "ptt_up", "transcript:find the mug",
@@ -324,6 +339,73 @@ expect(("pan_next", True) in out,
        "no answer in 15s -> ask for the NEXT-best angle, not the rejected one")
 expect(f.state == "S5B_TRACK", "and it goes back to watching")
 
+print("\n--- a planner that never answers ---")
+f = flow()
+run(f, ["ptt_down", "ptt_up", "transcript:watch the desk",
+        "arrived:S4_PLAN", "arrived:S5B_TRACK"], "")
+expect(f.state == "S5B_TRACK" and f.screen == "planning",
+       "holds at planning while the VLM is out")
+CLOCK[0] += ST.PLAN_TIMEOUT_S - 5
+f.feed("tick")
+expect(f.state == "S5B_TRACK",
+       "a slow answer is not a timeout -- still waiting at 40s")
+CLOCK[0] += 10
+f.feed("tick")
+expect(f.state == "S8_ERROR",
+       "no plan within PLAN_TIMEOUT_S -> S8, not a permanent 'planning...'")
+
+f = flow()
+run(f, ["ptt_down", "ptt_up", "transcript:watch the desk",
+        "arrived:S4_PLAN", "arrived:S5B_TRACK", "planned"], "")
+CLOCK[0] += ST.PLAN_TIMEOUT_S + 10
+f.feed("tick")
+# The claim is NO LATE S8, and it was written as `== S5B_TRACK` back when
+# nothing else could move the machine on a tick. The re-plan timers can, and
+# 100 s of quiet is well past both, so staying in S5B_TRACK is now the WRONG
+# expectation -- asserting it would be asserting that the re-plan is still dead.
+expect(f.state != "S8_ERROR",
+       "an answered plan disarms the deadline -- no late S8")
+expect(f.state == "S4_PLAN",
+       "...and 100s of quiet re-sweeps instead of staring")
+
+
+print("\n--- S4 re-fires on its own (REPLAN_IDLE_S / REPLAN_PERIOD_S) ---")
+# These two constants sat in states.py, documented and unread, while the robot
+# watched one angle until somebody tapped it.
+f = flow()
+run(f, ["ptt_down", "ptt_up", "transcript:watch the desk",
+        "arrived:S4_PLAN", "arrived:S5B_TRACK", "planned"], "")
+CLOCK[0] += ST.REPLAN_IDLE_S - 1
+f.feed("tick")
+expect(f.state == "S5B_TRACK", "just under REPLAN_IDLE_S -- still watching")
+CLOCK[0] += 2
+kinds = [k for k, _ in f.feed("tick")]
+expect(f.state == "S4_PLAN", "REPLAN_IDLE_S of nothing -> sweep again")
+expect("plan" in kinds,
+       "...and it re-arms the sweep, rather than only changing state")
+
+# A finding restarts the idle clock: the angle just proved it is not barren.
+f = flow()
+run(f, ["ptt_down", "ptt_up", "transcript:watch the desk",
+        "arrived:S4_PLAN", "arrived:S5B_TRACK", "planned"], "")
+CLOCK[0] += ST.REPLAN_IDLE_S - 2
+run(f, ["finding:cup", "ok"], "")
+CLOCK[0] += ST.REPLAN_IDLE_S - 2
+f.feed("tick")
+expect(f.state == "S5B_TRACK",
+       "a finding restarts the idle clock -- a productive angle is not abandoned")
+
+# Neither timer interrupts a turn the person is part of.
+for st, label in (("S6_FINETUNE", "a correction in progress"),
+                  ("S7b", "a report being delivered")):
+    f = flow()
+    run(f, ["ptt_down", "ptt_up", "transcript:watch the desk",
+            "arrived:S4_PLAN", "arrived:S5B_TRACK", "planned"], "")
+    f.state = st
+    CLOCK[0] += ST.REPLAN_PERIOD_S + 1
+    f.feed("tick")
+    expect(f.state != "S4_PLAN", f"{label} is not interrupted to go and sweep")
+
 print("\n--- transcript_usable thresholds ---")
 for text, want in [("find the blue mug", True), ("", False), ("hm", False),
                    ("!?!?", False), ("look left", True)]:
@@ -340,3 +422,38 @@ if __name__ == "__main__":
     sys.exit(1 if fails else 0)
 if fails:
     raise AssertionError("; ".join(fails))
+
+
+print("\n--- a judge in flight is not an empty angle ---")
+# Hardware, 2026-08-05: a judge started at 15:01:10, REPLAN_IDLE_S fired while it
+# ran, and the reply 114 s later -- selected_index 0, both cards confirmed --
+# was dropped as `stale candidate discarded`. Correct finding, correct
+# judgement, deleted by a clock measuring the wrong thing.
+f = flow()
+run(f, ["ptt_down", "ptt_up", "transcript:watch the desk",
+        "arrived:S4_PLAN", "arrived:S5B_TRACK", "planned"], "")
+f.judge_busy = True
+CLOCK[0] += ST.REPLAN_IDLE_S * 3
+f.feed("tick")
+expect(f.state == "S5B_TRACK",
+       "the idle clock does not run while a candidate is being judged")
+
+f.judge_busy = False
+CLOCK[0] += ST.REPLAN_IDLE_S - 1
+f.feed("tick")
+expect(f.state == "S5B_TRACK",
+       "...and it restarts from the moment judging ended, not from before it")
+CLOCK[0] += 2
+f.feed("tick")
+expect(f.state == "S4_PLAN", "...then re-plans normally once the angle is quiet")
+
+# The PERIOD timer is structural -- the room may have changed -- so it is not
+# postponed. But it must not fire mid-judgement either, for the same reason.
+f = flow()
+run(f, ["ptt_down", "ptt_up", "transcript:watch the desk",
+        "arrived:S4_PLAN", "arrived:S5B_TRACK", "planned"], "")
+f.judge_busy = True
+CLOCK[0] += ST.REPLAN_PERIOD_S + 1
+f.feed("tick")
+expect(f.state == "S5B_TRACK",
+       "the 5-minute timer also waits for the verdict")

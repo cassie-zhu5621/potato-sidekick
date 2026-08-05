@@ -56,7 +56,7 @@ class PlanView:
     waiting.
     """
 
-    def __init__(self, detector="gdino", vocab=("person",), conf=0.3,
+    def __init__(self, detector="yoloworld", vocab=("person",), conf=0.3,
                  persist=2, cooldown=15.0, tau_gap=3.0, lean_deg=25.0):
         # live relevance state, updated by each plan. `allow` is the closed-YOLO
         # whitelist (synonym-expanded to match whatever labels the detector

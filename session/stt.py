@@ -175,12 +175,27 @@ class STT:
         if self.record_dir:
             stamp = time.strftime("%Y%m%d_%H%M%S_") + f"{time.time_ns() % 1_000_000_000:09d}"
             wav_path = os.path.join(self.record_dir, f"ptt_{stamp}.wav")
-        wav = self.rec.stop(wav_path or "/tmp/noticebot_ptt.wav")
         self.busy = True            # the flow must not time out while this runs
 
         def work():
+            # rec.stop() RUNS HERE, not on the caller's thread.
+            #
+            # It closes a PortAudio stream, and that is a C call that can block
+            # indefinitely -- a mic whose permission was never granted, a device
+            # yanked mid-session, a sample rate the driver would not take. This
+            # used to run inline, which meant it ran on the MAIN loop, which meant
+            # a stuck microphone froze the servo scheduler, the CoreS3 poll and
+            # the researcher's keys all at once. Ctrl-C could not even reach it:
+            # the interpreter cannot deliver a signal while a C extension holds
+            # the thread, so the only way out was killing the process -- with
+            # torque still on.
+            #
+            # Off here, the worst case is a thread that never finishes. The flow's
+            # STT_HARD_TIMEOUT_S ceiling then does its job and the session
+            # continues into S8, which is what it is for.
             text, nsp, alp = "", 1.0, -9.0
             try:
+                wav = self.rec.stop(wav_path or "/tmp/noticebot_ptt.wav")
                 if wav and self.whisper:
                     try:
                         text, nsp, alp = self.whisper.transcribe(wav)

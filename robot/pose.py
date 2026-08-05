@@ -46,6 +46,34 @@ REAIM_DPS = 75.0                # = generate_s4_sweep.STATION_SPEED
 COLLAPSE_DPS = 47.0             # = generate_s8_error.py's swing peak, measured
 
 
+def reach_deg(name):
+    """(min, max) Blender degrees this joint can actually hold, in one place.
+
+    Derived from the live LIMITS/OFFSET/INVERT rather than written down, because
+    a written-down range survives a re-calibration and a derived one cannot. Pan
+    is roughly -68..+70 on the current mount: THE BODY DOES NOT TURN BEHIND
+    ITSELF. Anything that takes an angle from a person -- a seat preset, a
+    re-aim, the S7 user lock -- has to ask this before believing the number, or
+    it will store a bearing the robot can never adopt and then compute from it.
+    """
+    lo_u, hi_u = cal.LIMITS[name]
+    edges = []
+    for u in (lo_u, hi_u):
+        v = u - cal.OFFSET[name]
+        if cal.INVERT[name]:
+            v = 1023 - v
+        edges.append((v - CENTER) / UNITS_PER_DEG)
+    return (min(edges), max(edges))
+
+
+def clamp_deg(name, deg):
+    """-> (reachable_deg, was_clamped). The single place a request becomes a fact."""
+    lo, hi = reach_deg(name)
+    d = float(deg)
+    c = max(lo, min(hi, d))
+    return c, abs(c - d) > 0.05
+
+
 def resolve(name, raw_unit):
     """Clip unit -> commanded unit. Order matters: mirror, then trim, then clamp.
 

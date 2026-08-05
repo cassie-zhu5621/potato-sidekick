@@ -51,6 +51,14 @@ class Storyboard:
         self.bursts = []
         self.count = 0
         self.generation = 0
+        # WHICH REQUEST THIS FINDING ANSWERS. attention_log.jsonl is ONE file per
+        # run, appended, while a run routinely carries several plans -- 9 planner
+        # calls in e2e_20260805_132357 alone. Without these two fields a line
+        # cannot be traced back to the request that produced it, and a session
+        # where the participant asks twice becomes two sets of findings in one
+        # undifferentiated list. Set by the loop on every re-plan.
+        self.request = ""
+        self.plan_generation = 0
         os.makedirs(feed_dir, exist_ok=True)
 
     def reset(self):
@@ -142,7 +150,11 @@ class Storyboard:
                "why": "watch-spec", "note": note,
                "thumb": f"thumb_{fid}.jpg", "frame": f"frame_{fid}.jpg",
                "label": b["label"], "shots": n, "story": story,
-               "truth": b["truth"]}
+               "truth": b["truth"],
+               # provenance -- see __init__
+               "request": self.request,
+               "plan_generation": self.plan_generation,
+               "story_generation": self.generation}
         import argparse
         publish(strip, rec, argparse.Namespace(save=True, feed_dir=self.feed_dir),
                 self.ui)

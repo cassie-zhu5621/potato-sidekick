@@ -12,7 +12,7 @@ Protocol (line-based, 115200, '
                       EVT LED <0-255> | EVT HUE <WARM|COOL|RED|GREEN|ALARM> |
                       EVT SFX <name> | EVT VOL <0-255> | EVT REST | EVT PING
   CoreS3 -> laptop :  IN PTT_DOWN | IN PTT_UP | IN OK | IN STOP | IN BODYTAP |
-                      IN PONG cores3_sidekick v2
+                      IN PONG cores3_sidekick v4
 
 The board cannot be found by name -- macOS calls it usbmodem-<location id> just
 like the servo adapter -- so find_cores3() asks it instead. See below.
@@ -28,6 +28,18 @@ except ImportError:
     serial = None
 
 
+# The version robot/firmware/cores3_sidekick/cores3_sidekick.ino currently
+# announces. Bump it for ANY change the laptop cannot observe -- a new command,
+# a changed colour, a moved button. Not just the protocol.
+#
+# v3 -> v4 is exactly that lesson: v3 added the SUMMON and SPENT hue names, then
+# SPENT's RGB changed from blue to amber WITHIN v3. The board still answered
+# "v3", this check still said "match", and the antenna was still blue. A version
+# that tracks only the protocol cannot answer the one question it is asked --
+# "is the thing in front of me built from the code in front of me".
+FIRMWARE_V = "v4"
+
+
 def find_cores3(exclude=(), timeout=4.0, baud=115200, verbose=True):
     """-> port of the CoreS3, or None.
 
@@ -38,7 +50,7 @@ def find_cores3(exclude=(), timeout=4.0, baud=115200, verbose=True):
 
     OPENING THE PORT DOES RESET THIS BOARD, and the previous version of this
     function asserted the opposite. Measured on the bench: a bare open followed
-    by a read returns `IN HELLO cores3_sidekick v2` -- the greeting from setup()
+    by a read returns `IN HELLO cores3_sidekick v4` -- the greeting from setup()
     -- which only happens if the board rebooted. So the old sequence lost every
     time it mattered:
 
@@ -83,7 +95,27 @@ def find_cores3(exclude=(), timeout=4.0, baud=115200, verbose=True):
                     if b"cores3" in buf.lower():
                         if verbose:
                             what = "greeted" if b"hello" in buf.lower() else "answered PING"
-                            print(f"[cores3] {port} {what}")
+                            txt = buf.decode("utf-8", "ignore")
+                            ver = ""
+                            for tok in txt.replace("\r", " ").split():
+                                if tok.startswith("v") and tok[1:].isdigit():
+                                    ver = tok
+                            print(f"[cores3] {port} {what} ({ver or 'no version'})")
+                            # CHECK THE FIRMWARE VERSION HERE, not when a state
+                            # finally looks wrong. The board answers PING happily
+                            # while running any build, so "connected" says nothing
+                            # about whether it understands what it is about to be
+                            # sent. A pre-v3 board does not know HUE SUMMON or
+                            # SPENT: it falls through the chain, sets no colour,
+                            # and keeps the previous one -- so S8 comes up in S1's
+                            # colour and the run looks fine until someone notices
+                            # that error and idle are the same.
+                            if ver and ver != FIRMWARE_V:
+                                print(f"[cores3] !! board is {ver}, this checkout "
+                                      f"expects {FIRMWARE_V}. Colours and screens "
+                                      f"added since {ver} will be IGNORED, "
+                                      f"silently. Reflash "
+                                      f"robot/firmware/cores3_sidekick/.")
                         return port
         except Exception as e:
             # Say WHY. Swallowing this made three different failures -- port
@@ -184,7 +216,49 @@ class CoreS3Link:
 # ----------------------------------------------------------------------------
 if __name__ == "__main__":
     import sys
-    port = sys.argv[1] if len(sys.argv) > 1 else "/dev/tty.usbmodem101"
+    args = [a for a in sys.argv[1:] if not a.startswith("-")]
+    port = args[0] if args else (find_cores3() or "/dev/tty.usbmodem101")
+
+    # --hues walks the palette at ONE FIXED LEVEL. Every complaint about these
+    # colours so far has been confounded by the envelope: each state also has
+    # its own brightness, so "these two look the same" could mean the hues are
+    # too close, or that one is simply dim. Holding the level constant asks only
+    # the colour question. It also proves the board understands the names --
+    # a pre-v3 board ignores SUMMON and SPENT and just keeps the previous
+    # colour, so the walk visibly stalls on RED instead of continuing.
+    if "--hues" in sys.argv:
+        seen = []
+        link = CoreS3Link(port, on_input=lambda s: (print("[cores3]", s),
+                                                    seen.append(s)))
+        link.event("PING")
+        time.sleep(0.8)
+        ver = ""
+        for s in seen:
+            for tok in s.split():
+                if tok.startswith("v") and tok[1:].isdigit():
+                    ver = tok
+        print(f"\n  firmware: {ver or 'UNKNOWN'}   expected: {FIRMWARE_V}")
+        if ver and ver != FIRMWARE_V:
+            print(f"  !! STOP HERE AND REFLASH. On {ver}, SUMMON and SPENT are "
+                  f"not understood;\n     the antenna keeps whatever colour was "
+                  f"set last, so S8 shows S1's colour.")
+        print()
+        link.event("UI", "idle")
+        link.event("LED", 200)                 # one level for all five
+        for name, want in [("WARM", "warm white -- idle"),
+                           ("COOL", "cyan -- attending"),
+                           ("RED", "red -- not that one"),
+                           ("SUMMON", "amber/yellow -- a finding"),
+                           ("SPENT", "blue -- stuck")]:
+            print(f"  HUE {name:7} should look: {want}")
+            link.event("HUE", name)
+            for _ in range(14):                # LED level must be re-sent: the
+                link.event("LED", 200)         # board falls back to its breath
+                time.sleep(0.1)                # after 500 ms of silence
+        link.event("REST")
+        link.close()
+        raise SystemExit(0)
+
     link = CoreS3Link(port, on_input=lambda s: print("[cores3]", s))
     print(f"connected to {port}; running demo…  (Ctrl-C to stop)")
     for cmd, arg in [("PING", ""), ("UI", "idle"), ("HUE", "COOL"),
