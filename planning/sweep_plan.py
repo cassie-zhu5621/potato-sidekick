@@ -30,6 +30,7 @@ import numpy as np
 
 from perception.overlay import C_RED, C_GREEN
 from perception.gaze import draw_text
+from planning.station_score import rule_name, station_score
 
 CW, CH = 480, 360          # local researcher-grid cell size (not Gemini input)
 
@@ -82,7 +83,11 @@ class Sweep:
             grid[r * CH:r * CH + CH, c * CW:c * CW + CW] = cv2.resize(fr, (CW, CH))
             cells.append({"pan": pan, "fr": fr, "x0": c * CW, "y0": r * CH})
         jpegs = [cv2.imencode(".jpg", fr)[1].tobytes() for _, fr in grabbed]
-        print(f"[sweep] one Gemini call with {N} independent pure frames")
+        # Not "one Gemini call" any more -- naming the wrong provider in the log
+        # is how an hour goes into the wrong SDK.
+        from planning.provider import provider_name
+        print(f"[sweep] one {provider_name()} call with {N} independent pure "
+              f"frames; stations scored by {rule_name()}")
         res = plan_fn(context, jpegs)
         spec = (res or {}).get("spec")
         if spec is None:
@@ -141,7 +146,7 @@ class Sweep:
             raw_fn = f"raw_pan_{int(round(pan)):+04d}.jpg"
             cv2.imwrite(os.path.join(out, raw_fn), fr)
             cv2.imwrite(os.path.join(out, fn), vis)
-            sc = sum(3 if tier == "focus" else 1 for _, tier, _ in per[i])
+            sc = station_score(per[i])
             if sc > best[0]:
                 best = (sc, pan)
             print(f"[sweep] pan {pan:+.0f}deg: {len(per[i])} VLM boxes (score {sc})")
@@ -165,7 +170,13 @@ class Sweep:
                 "seen": spec.get("seen"), "detect": spec.get("detect"),
                 "focus": spec.get("focus"), "coverage": cover,
                 "watch_spec": spec, "shots": shots, "panorama": "panorama.jpg",
-                "richest_pan": int(round(best[1])), "richest_score": best[0]}
+                "richest_pan": int(round(best[1])), "richest_score": best[0],
+                # Which model answered and which rule turned its boxes into an
+                # aim. Without these two, a recorded sweep cannot be explained
+                # later: the same frames score differently under each rule.
+                "provider": __import__("planning.provider", fromlist=["x"]
+                                       ).provider_name(),
+                "score_rule": rule_name()}
         with open(os.path.join(out, "plan.json"), "w") as f:
             json.dump(meta, f, indent=2)
         print(f"[sweep] {len(shots)} independent frames + local grid -> {out}   richest pan "

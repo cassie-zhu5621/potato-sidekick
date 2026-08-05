@@ -22,3 +22,6 @@ faster-whisper       # transcription. The first call downloads the model, which
 
 # ---- optional faster detector interface ---------------------------------
 ultralytics          # --detector yoloworld / yolo; tested alternative to 1 Hz GDINO
+anthropic           # OPTIONAL: only for NOTICEBOT_LLM_PROVIDER=anthropic.
+                    # The provider is imported lazily, so leaving this
+                    # uninstalled costs nothing on the gemini path.
