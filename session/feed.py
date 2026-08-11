@@ -6,6 +6,14 @@ count on the robot's screen and the count on the page can never be counting
 different events -- which is exactly what happened when the storyboard hung off
 the detector while the screen hung off the state machine.
 
+SAME EVENTS, DIFFERENT WINDOWS (2026-08-08). The two counts are no longer equal,
+and that is deliberate rather than a return of the bug above. STOP resets the
+CoreS3 count and keeps the page's cards, so the board answers "how many for what
+I just asked" and the page answers "how many for me, this session". Both are
+still fed by this function and only this function; what changed is how far back
+each one looks, which is visible on the page -- each card names its request --
+rather than a silent disagreement about what counts as a finding.
+
   <feed_dir>/frame_<id>.jpg      the full comic strip
   <feed_dir>/thumb_<id>.jpg      the card thumbnail
   <feed_dir>/attention_log.jsonl one line per record: note, story, truth, worth
@@ -28,6 +36,20 @@ def publish(fr, rec, args, UI):
                     cv2.resize(fr, (192, max(1, int(192 * H / W)))))
         with open(os.path.join(args.feed_dir, "attention_log.jsonl"), "a") as fh:
             fh.write(json.dumps(rec) + "\n")
+        # AND THE PAGE THE PARTICIPANT WILL READ, rebuilt now rather than
+        # remembered later. Protocol §6 follows the work phase immediately, so a
+        # review page one report stale is worse than no page at all: they are
+        # asked about a report that is not on the screen. This is the single
+        # writer for the record, which makes it the only place that can promise
+        # the page and the log agree.
+        #
+        # Wrapped because a report is not allowed to fail over its own rendering.
+        # Whatever went wrong here, the line above is already on disk.
+        try:
+            from session.review import build
+            build(args.feed_dir)
+        except Exception as exc:                      # pragma: no cover
+            print(f"[feed] review page not rebuilt: {str(exc)[:90]}")
     if UI is not None:
         tjpg = cv2.imencode(".jpg", cv2.resize(fr, (192, max(1, int(192 * H / W)))))[1].tobytes()
         with UI.LOCK:
