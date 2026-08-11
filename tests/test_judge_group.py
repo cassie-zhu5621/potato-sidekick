@@ -28,8 +28,11 @@ def test_candidate_group_uses_one_call_for_all_cards_and_five_frames(monkeypatch
 
     assert len(calls) == 1, "two cards must not become two requests"
     assert calls[0][2]["images"] == frames
-    assert calls[0][2]["labels"] == [
-        "t-1.0s", "t-0.5s", "t0_onset", "t+0.5s", "t+1.0s"]
+    # Derived from EVENT_OFFSETS_S, not typed out. Typed out, this list and the
+    # sentence in the prompt drifted apart from the window they describe and
+    # stayed wrong for months -- see test_judge_cannot_check_left_from_right.
+    from planning.judge import _frame_labels
+    assert calls[0][2]["labels"] == _frame_labels(5, event_window=True)
     # The labels go in as a one-line hint now, not as a JSON block of claims to
     # adjudicate -- but both cards must still be named, or the model is judging
     # five frames with no idea which part matters.

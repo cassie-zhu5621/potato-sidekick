@@ -44,15 +44,48 @@ def test_the_schema_asks_for_two_things():
 def test_the_request_frames_the_hint_rather_than_trailing_it():
     p = _group_prompt(CARDS, ReportabilityTaste(), REQ)
     assert REQ in p
-    assert p.index(REQ) < p.index("Motion detection thinks it saw")
+    assert p.index(REQ) < p.index("THIS MOMENT WAS FLAGGED")
 
 
 def test_the_cards_are_a_hint_not_a_claim_to_check():
     """Five frames of a room with no hint is an invitation to describe the wrong
-    corner -- but the labels must not be presented as facts to adjudicate."""
+    corner -- but the labels must not be presented as facts to adjudicate.
+
+    The wording moved on 2026-08-09 and the property did not. It used to read
+    "a hint about where to look, not a claim to check"; it now separates the two
+    questions explicitly, because a second job landed on the same sentence -- see
+    test_only_the_part_that_fired_is_judged."""
     p = _flat(_group_prompt(CARDS, ReportabilityTaste(), REQ))
     assert "reading book, gazing at book" in p
+    assert "WHICH part is settled; WHETHER it happened is what you are for" in p
+
+
+def test_only_the_part_that_fired_is_judged():
+    """Observed 2026-08-09 21:14. The request named two things -- new people, and
+    someone touching the plant -- and the planner wrote a card for each. Only
+    `person_arrives` fired, so only it was sent; but the whole sentence came with
+    it, and the judge answered about the other half:
+
+        "A person is standing in the room but they do not touch the plant."
+
+    A real arrival would have been rejected for the plant's sake. Participants
+    are asked to name two things in one breath (S2_EVENT_COVERAGE), so this is
+    the normal case rather than an edge one."""
+    p = _flat(_group_prompt(CARDS, ReportabilityTaste(), REQ))
+    assert "ONE PART OF THAT REQUEST" in p
+    assert "Judge ONLY the part named above" in p
+    assert "because a different part did not happen is the error to avoid" in p
+    assert "SHOW THAT PART" in p
+
+
+def test_without_a_request_the_older_wording_stands():
+    """`--offline` runs and the manual `f` key reach the judge with no request at
+    all. "Judge only that part" would then be scoping the model to a phrase it
+    has not been given."""
+    p = _flat(_group_prompt(CARDS, ReportabilityTaste(), ""))
     assert "hint about where to look, not a claim to check" in p
+    assert "SHOW WHAT THEY ASKED FOR" in p
+    assert "ONE PART OF THAT REQUEST" not in p
 
 
 def test_a_standing_state_satisfies_a_standing_request():
