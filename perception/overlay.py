@@ -68,12 +68,27 @@ def draw_relation_ribbon(fr, W, H, truth, entries):
         if len(e.get("any", [])) >= 2:
             connect(e["any"], "OR", any(on(i) for i in e["any"]))
 
-def make_strip(shots, height=300):
-    """The comic strip: N shots -> one horizontal story image."""
+def make_strip(shots, height=None):
+    """The comic strip: N shots -> one horizontal story image.
+
+    `height=None` keeps the camera's own resolution. It used to default to 300,
+    which threw away four fifths of every panel on the way to disk: the shots
+    arrive at 1280x720 and were saved 533x300. Nothing needed them small -- the
+    card thumbnail is resized separately in `feed.publish`, and the browser
+    scales with CSS -- so the loss showed up only later, when someone tried to
+    enlarge a panel during the review phase and found there was nothing behind
+    the pixels.
+
+    A 5-panel strip is about 400 KB at native size against 90 KB before. The
+    in-memory cache in `feed.publish` holds twenty of them, so roughly 8 MB.
+    """
+    if height is None:
+        height = max(s.shape[0] for s in shots)
     tiles = []
     for s in shots:
         h, w = s.shape[:2]
-        tiles.append(cv2.resize(s, (max(1, int(w * height / h)), height)))
+        tiles.append(s if h == height
+                     else cv2.resize(s, (max(1, int(w * height / h)), height)))
     return np.hstack(tiles)
 
 def shot_trace(truth, viz):

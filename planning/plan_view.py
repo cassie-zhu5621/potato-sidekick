@@ -45,7 +45,8 @@ from perception.overlay import (draw_relation_ribbon,
 from perception.perceive import make_detector
 from perception.relations import RelationEngine
 from perception.watch_exec import WatchExecutor
-from planning.spec_utils import _expand, _FilteredDetector, _focus_ok, spec_summary
+from planning.spec_utils import (_expand, _FilteredDetector, _focus_ok,
+                                 _verbatim, prompt_terms, spec_summary)
 
 
 class PlanView:
@@ -57,7 +58,8 @@ class PlanView:
     """
 
     def __init__(self, detector="yoloworld", vocab=("person",), conf=0.3,
-                 persist=2, cooldown=15.0, tau_gap=3.0, lean_deg=25.0):
+                 persist=2, cooldown=15.0, tau_gap=3.0, lean_deg=25.0,
+                 synonym_prompt=True):
         # live relevance state, updated by each plan. `allow` is the closed-YOLO
         # whitelist (synonym-expanded to match whatever labels the detector
         # emits); `want_classes` is the RAW planner nouns for an open-vocab
@@ -70,6 +72,20 @@ class PlanView:
                               self.relevance),
             lean_deg=lean_deg)
         self._persist, self._cooldown, self._tau_gap = persist, cooldown, tau_gap
+        # WHETHER TO ASK FOR EVERY NAME OF AN OBJECT. The argument for yes is
+        # that an open-vocab model finds only what it is prompted for, and the
+        # objects that matter here -- a phone in a hand -- are small and
+        # half-occluded, so each extra name is another chance to be found.
+        #
+        # It is a flag rather than a decision because THAT ARGUMENT IS UNTESTED
+        # on this rig. Ultralytics scores each prompted class independently, so
+        # near-duplicate names should not divide one object's score between
+        # them; "should not" is reasoning, and the failure it would produce --
+        # slightly lower recall on exactly the object being watched -- looks
+        # identical to the object simply being hard to see. Only a run with it
+        # off can tell them apart, and `[relevance] detector re-prompted ->`
+        # records what was actually asked for on each side.
+        self._synonym_prompt = synonym_prompt
 
         self.spec = None
         self.executor = None
@@ -86,13 +102,18 @@ class PlanView:
         if not spec:
             self.relevance["allow"], self.relevance["focus"] = None, set()
             return
-        raw = lambda ls: {str(w).strip().lower() for w in (ls or []) if str(w).strip()}
+        # THE PROMPT IS THE WIDE END. An open-vocab model finds only what it is
+        # asked for, so it is asked for every name of each object -- "phone",
+        # "cell phone", "smartphone". That is bought purely as recall; the
+        # answers are canonicalised back to one name at the detector, so nothing
+        # below here ever sees the aliases.
         self.relevance["allow"] = _expand(spec.get("detect")) or None
         self.relevance["focus"] = _expand(spec.get("focus"))
         # 'person' is pinned in unconditionally: an open-vocab model only finds
         # what it is prompted for, and people drive every social relation.
-        self.relevance["want_classes"] = (raw(spec.get("detect"))
-                                          | raw(spec.get("focus")) | {"person"})
+        ask = prompt_terms if self._synonym_prompt else _verbatim
+        self.relevance["want_classes"] = (ask(spec.get("detect"))
+                                          | ask(spec.get("focus")) | {"person"})
         self.relevance["classes_ver"] += 1
 
     def set_plan(self, spec, context):
@@ -190,6 +211,111 @@ class PlanView:
         return fr
 
     # -------------------------------------------------------------- publish ---
+    def why_not(self):
+        """One line naming the FIRST broken link in the chain, or None if fine.
+
+        A relation that is false says nothing about why. `hands on plant` needs,
+        in order: a pose with wrists, a detected `plant`, the wrist inside its
+        box, one sustained second, two consecutive frames, the object in `focus`,
+        and no cooldown. Seven places to stop, one observable -- "waiting: 9" --
+        and no way to tell which. In a 15-minute session with three scripted
+        events, "it did not fire" has to be attributable while it is happening,
+        not reconstructed afterwards from a log that does not record it.
+
+        Ordered so the first miss is the one reported: no people makes every
+        other question moot, and a missing object makes the geometry moot.
+        """
+        people = self.viz.get("people") or []
+        dets = self.viz.get("dets") or []
+        labels = {str(d.label).lower() for d in dets}
+
+        # THE PLANNER'S OWN NOUNS, not the expanded set. `_expand` returns every
+        # label that WOULD SATISFY a noun -- an OR, as its docstring says -- and
+        # reading it as a list of things that must each be present reports a
+        # synonym as missing. On 2026-08-08 that filled the screen with
+        #
+        #   [cv] 1 person(s), but the detector does not see cell phone
+        #                     -- it sees phone
+        #
+        # for a plan whose every field said "phone": `_expand` had added COCO's
+        # "cell phone" beside it, and this function then demanded both. Worse
+        # than useless -- it returned before reaching the check that would have
+        # named the real blocker, so the one line on screen was pointing away
+        # from the problem the whole time.
+        spec = self.spec or {}
+        want = {str(w).strip().lower() for w in (spec.get("focus") or [])}
+        for e in spec.get("watch", []) or []:
+            on = e.get("on")
+            if isinstance(on, str) and on.strip():
+                want.add(on.strip().lower())
+        want.discard("person")
+        seen_objs = sorted(labels - {"person"})
+
+        if not people:
+            return ("no pose at all -- MediaPipe found nobody. Too far, too "
+                    "dark, or out of frame; every relation is blocked here")
+        missing = sorted(w for w in want if not (_expand([w]) & labels))
+        if missing:
+            return (f"{len(people)} person(s), but the detector does not see "
+                    f"{', '.join(missing)} -- it sees "
+                    f"{', '.join(seen_objs) or 'no objects'}")
+        if not any(self.truth.values()):
+            # NAME THE GEOMETRY, not the list of things it could be. Everything
+            # up to here is satisfied, so the question is always "how close is
+            # it", and the engine already holds the answer for hands-on: a live
+            # contact clock means the wrist IS on the object and only the second
+            # has not elapsed, which is a completely different instruction to
+            # the person acting it out than "put your hand nearer the thing".
+            held = self._handson_progress()
+            if held is not None:
+                lab, secs, need = held
+                return (f"HAND is on the {lab}, held {secs:.1f}s of the "
+                        f"{need:.1f}s needed -- keep still a moment longer")
+            ids = set()
+            for e in spec.get("watch", []) or []:
+                ids |= set((e.get("all") or []) + (e.get("any") or [])
+                           + (e.get("then") or []))
+            if 9 in ids:
+                return (f"{len(people)} person(s) and {', '.join(seen_objs)} both "
+                        f"seen, but no HAND POINT is inside any object box "
+                        f"(+10% margin) -- wrist, or either index/pinky knuckle "
+                        f"when MediaPipe is sure of them")
+            # PERSON-ONLY PLANS HAVE NO OBJECTS TO NAME, and the old wording
+            # said "N person(s) and  both seen" with a hole in it -- which reads
+            # as a bug in the diagnostic rather than as the answer. `gathering`
+            # is the case that brought this up: "people coming into the room"
+            # compiles to id 10 alone, `detect` is just `person`, and there is
+            # nothing else in the room the sentence could be about.
+            if 10 in ids:
+                return (f"{len(people)} person(s) seen, but the count has not "
+                        f"CHANGED and held -- gathering needs a new stable "
+                        f"number, so someone has to arrive or leave and stay")
+            if not seen_objs:
+                return (f"{len(people)} person(s) seen and no objects are being "
+                        f"watched for, but no relation holds -- this plan is "
+                        f"about people only, so it is the person-to-person "
+                        f"geometry (distance, facing, gaze) that has not met it")
+            return (f"{len(people)} person(s) and {', '.join(seen_objs)} both seen, "
+                    f"but no relation holds -- geometry (gaze not landing / not "
+                    f"sustained)")
+        return None
+
+    def _handson_progress(self):
+        """-> (label, seconds held, seconds needed) for the furthest-along
+        contact, or None if no wrist is on anything.
+
+        Read straight off the engine rather than recomputed: a second opinion
+        about whether a wrist is on a box is exactly the thing that would
+        disagree with the gate it is supposed to be explaining."""
+        eng = getattr(self, "engine", None)
+        clocks = getattr(eng, "_touch_since", None) or {}
+        if not clocks:
+            return None
+        import time
+        now = time.time()
+        (_pid, label), rec = max(clocks.items(), key=lambda kv: now - kv[1][0])
+        return label, max(0.0, now - rec[0]), float(getattr(eng, "sustain_s", 1.0))
+
     def publish(self, UI, jpg=None, states=None, collecting=None):
         """Fill THE PLAN panel. Same keys attention_system pushed, so the page's
         JS is untouched -- plus `transcript` and `states`, which are additions
@@ -207,6 +333,15 @@ class PlanView:
             UI.STATE["focus"] = list(s.get("focus") or [])
             UI.STATE["transcript"] = self.transcript
             UI.STATE["suppressed"] = list(self.suppressed)
+            # The editable shape of the plan, for the researcher's override (the
+            # EDIT row under THE PLAN). Only the three fields a hand-edit ever
+            # touches -- which relations, on what, called what -- so the page
+            # cannot accidentally become a second definition of a watch-spec.
+            UI.STATE["spec_watch"] = [
+                {"ids": list(e.get("all") or []),
+                 "on": e.get("on") or "",
+                 "label": e.get("label") or ""}
+                for e in (s.get("watch") or []) if isinstance(e, dict)]
             UI.STATE["status"] = attention_ui.build_status(
                 self.statuses, self.entries(), self.truth)
             if states is not None:
