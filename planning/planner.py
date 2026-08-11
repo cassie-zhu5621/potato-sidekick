@@ -22,6 +22,8 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 from planning.provider import DEFAULT_MODEL, call_json, model_name
+# NOT this module's own `canonical`, which canonicalises a whole spec.
+from planning.spec_utils import canonical as _canon_label
 
 MODEL = model_name()
 
@@ -46,7 +48,28 @@ _FEWSHOT_SHAPES = """Examples of watchable moments (compositions and their meani
 - [2, 4] — joint attention AND pointing — showing something to each other
 - [10, 6, 1] — the group grows (someone joins) AND a face-to-face formation AND gazing at the same thing — an introduction
 Compose freely: singles, pairs, or triples — whatever the context actually calls for.
-Pick the MOST SPECIFIC relation for the context: 'comes to my desk' is approach(7), not gathering(10)."""
+
+PREFER ONE RELATION PER ENTRY. An AND is not a description, it is a FILTER: every id you
+add removes the frames where that one happens to be false, and they multiply. One person
+doing one thing to one object is ONE relation.
+
+  * NEVER add gazing-at(1) to a contact relation. Somebody with their hands on a thing is
+    already looking at it, so the AND adds no information and subtracts every frame where
+    the head is turned — which, for anyone reaching sideways or standing close to a large
+    surface, is most of them. "drawing on a whiteboard" is hands-on(9) on the whiteboard.
+    It is NOT hands-on(9) AND gazing-at(1).
+  * The same goes for leaning(8), proximity(5) and approach(7) bolted onto a contact. If
+    the hand is on the object, all three are nearly implied and none is reliable.
+  * WANT BOTH? WRITE TWO ENTRIES. Separate entries are alternatives — either one fires.
+    One entry with two ids needs both at once. Those are opposite behaviours, and the
+    looser one is almost always what was meant.
+
+Compose inside one entry only when the request names two things that must genuinely
+COINCIDE and neither implies the other — "two people close together AND facing each
+other", where either alone would be a different event.
+
+Pick the MOST SPECIFIC relation for the context: 'comes to my desk' is approach(7) ON the desk, not gathering(10).
+But 'comes INTO THE ROOM' is gathering(10) with no "on" — nobody is approaching a thing, the room simply has one more person in it."""
 
 _SCHEMA_COMMON = ('"seen": [<ALL object nouns you can see in the frame right now, before any '
                   'filtering — for debugging what the planner perceived>], '
@@ -185,6 +208,50 @@ short (2 decimals).
    - ids 3, 5, 6, 10 take NO "on" (eye-contact / proxemic / F-formation / gathering are about people).
 Prefer common object names.
 
+"on" MUST NAME SOMETHING A DETECTOR CAN PUT A BOX AROUND: a thing with edges and a
+characteristic appearance. These are NOT that, however natural they sound:
+
+  door, doorway, entrance, exit, room, corner, wall, floor, ceiling, background,
+  area, space, side, hallway, outside
+
+Most of them are OPENINGS or REGIONS -- an absence, or a part of the building. No
+detector returns them, so an entry naming one in "on" is refused on every frame,
+for as long as the plan lives, and nothing says why. Prefer a piece of furniture
+that stands where the place is ("the desk", "the whiteboard") if the location
+really is the point.
+
+AND AN ARRIVAL IS NOT AN OBJECT EVENT AT ALL. "someone comes in", "people
+arriving", "when somebody enters" are about WHO IS PRESENT changing, which is
+gathering(10) and takes no "on" whatsoever. Reaching for a door to represent a
+doorway is the trap: it converts a question about people into a question about a
+thing that cannot be seen. approach(7) is for arriving AT SOMETHING DETECTABLE,
+and it must NAME that thing: "someone coming to the desk" is approach(7) on the
+desk. NEVER write approach(7) with no "on" -- a 7 without an object is checked
+against every focus object at once and passes none of them, so the card is
+suppressed on every frame and the moment is never reported. If you cannot name
+what is being approached, the moment you mean is gathering(10).
+
+THE REQUEST IS SPOKEN TO THE ROBOT, so the request's OWN watching verb says who
+is watching -- the robot -- and is NOT part of the moment to plan for. "Look at",
+"watch for", "keep an eye on", "tell me when", "notice when" are all framing.
+Strip that frame before you read the moment.
+
+Test it by deletion: if what remains still describes a scene, the verb was the frame.
+  "Looking at | people holding a phone" leaves "people holding a phone" -- a complete
+  moment -- so the leading "looking at" was framing. Plan hands-on(9) ALONE.
+  Adding gazing-at(1) here is the mistake: it makes the PERSON look at the phone a
+  requirement, which is not what was asked.
+  "Tell me when | someone looks at the whiteboard" leaves "someone looks at the
+  whiteboard" -- still a moment, and its "looks at" has a person as its subject and a
+  thing as its object, so THAT one is content. gazing-at(1) on whiteboard is correct.
+The difference is whose eyes: the robot's (frame, drop it) or a person's in the room
+(content, keep it).
+
+A wrongly kept frame verb is not a harmless extra. Every id you AND together is one
+more thing that must hold in the SAME instant, so it makes the requested moment
+rarer -- often much rarer. The person is not told their request was widened; they
+just watch a robot that never reports, and conclude it is broken.
+
 CONTEXT: "{context}"
 
 THE CONTEXT IS USUALLY DICTATED AND AUTOMATICALLY TRANSCRIBED, so it may contain
@@ -255,8 +322,29 @@ def validate(spec: dict, grammar: str = "restricted") -> list:
                 v.append(f"watch[{i}].{f}: unknown id in {ids}")
             if len(set(ids)) != len(ids):
                 v.append(f"watch[{i}].{f}: duplicate ids {ids}")
+        # `on` IS PART OF WHAT MAKES A CARD DISTINCT.
+        #
+        # Without it, two cards watching the same relation on different objects
+        # were called duplicates and the whole plan was thrown out. Observed
+        # 2026-08-09 21:35 on "Look at people drawing on the white board. Look at
+        # people touching my plants." -- which is the shape the study asks every
+        # participant for, two things named in one breath:
+        #
+        #     watch[0]  all=[9]  on='whiteboard'
+        #     watch[1]  all=[9]  on='plant'     -> "watch[1]: duplicate entry"
+        #
+        # Both retries produced the same (correct) shape, so both failed, and the
+        # session went to S8 and back to idle with nothing to watch. Of the three
+        # pairs the card offers, this was the only one that could never compile --
+        # and it is the pair the sweep aims at best, since both objects sit in one
+        # station.
+        #
+        # Canonical, because the same object comes back under different names
+        # between attempts (`plant` then `potted plant` in that very audit). A
+        # real duplicate -- same relation, same object -- is still caught.
         key = (frozenset(ops["all"]), frozenset(ops["any"]),
-               frozenset(ops["not"]), tuple(ops["then"]))
+               frozenset(ops["not"]), tuple(ops["then"]),
+               _canon_label(c.get("on") or ""))
         if key in seen:
             v.append(f"watch[{i}]: duplicate entry")
         seen.add(key)
@@ -304,6 +392,43 @@ def canonical(spec: dict):
             out.add((frozenset(c.get("all", []) or []), frozenset(c.get("any", []) or []),
                      frozenset(c.get("not", []) or []), tuple(c.get("then", []) or [])))
     return frozenset(out)
+
+
+def repair_bare_approach(spec: dict) -> dict:
+    """approach(7) with no `on` -> gathering(10). Announced, never silent.
+
+    A BARE APPROACH CAN NEVER FIRE. `_focus_ok` treats 7 as object-directed, so
+    with no `on` it falls back to "approaching any FOCUS object" -- and a person
+    walking into a room is approaching neither the plant nor another person. The
+    card sits in the plan looking correct and is suppressed on every frame:
+
+        [gate] comes to room suppressed (gaze/point not on a focus object)
+
+    THE PROMPT ASKS FOR THIS ALREADY and has now failed at it twice. "Coming into
+    the room" is `gathering(10)` -- who is present changed -- and the request
+    "Looking at people coming to the room" still compiled to bare 7 on
+    2026-08-09, because a few-shot line forty-eight lines earlier reads "'comes
+    to my desk' is approach(7)" and the two sentences look alike. Both texts are
+    fixed; this is the floor under them, because arrivals are one of the study's
+    three staged events and a prompt that has slipped twice may slip again on a
+    wording nobody has tried yet.
+
+    Not a rejection. Refusing the plan would send the session to S8 and cost the
+    participant their brief, which is a worse answer to a card that is merely
+    mislabelled -- the moment the model wanted to watch for is exactly the moment
+    gathering(10) describes.
+    """
+    for c in (spec or {}).get("watch", []) or []:
+        if not isinstance(c, dict):
+            continue
+        ids = list(c.get("all") or [])
+        if ids == [7] and not (c.get("on") or "").strip() and not c.get("any") \
+                and not c.get("then"):
+            c["all"] = [10]
+            print(f"[planner] bare approach(7) {c.get('label', '')!r} -> "
+                  f"gathering(10): a 7 with no object can never pass the focus "
+                  f"gate, and an arrival is a change in who is present")
+    return spec
 
 
 def ops_used(spec: dict) -> set:
@@ -403,6 +528,7 @@ def plan(context: str, jpeg: Optional[bytes | Sequence[bytes]] = None, model: st
         # CONTENTS ("watch: missing or empty") and sends the next person looking
         # at the model's judgement instead of at its packaging.
         spec = unwrap_double_encoded(spec)
+        spec = repair_bare_approach(spec)
         return {"spec": spec, "violations": validate(spec, grammar),
                 "raw": text, "grammar": grammar}
     except Exception as ex:
