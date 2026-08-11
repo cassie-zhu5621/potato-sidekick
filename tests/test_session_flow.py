@@ -365,13 +365,19 @@ f.feed("tick")
 # expectation -- asserting it would be asserting that the re-plan is still dead.
 expect(f.state != "S8_ERROR",
        "an answered plan disarms the deadline -- no late S8")
-expect(f.state == "S4_PLAN",
-       "...and 100s of quiet re-sweeps instead of staring")
 
 
 print("\n--- S4 re-fires on its own (REPLAN_IDLE_S / REPLAN_PERIOD_S) ---")
 # These two constants sat in states.py, documented and unread, while the robot
-# watched one angle until somebody tapped it.
+# watched one angle until somebody tapped it. They are now 0 -- OFF for the user
+# study, where quiet is the normal condition and thirteen re-sweeps in fifteen
+# minutes left the aim close to random when an event finally happened.
+#
+# The MECHANISM is still tested, with the constants supplied here: switching a
+# feature off for one study must not delete the coverage that says it works.
+_IDLE, _PERIOD = ST.REPLAN_IDLE_S, ST.REPLAN_PERIOD_S
+ST.REPLAN_IDLE_S, ST.REPLAN_PERIOD_S = 30.0, 300.0
+
 f = flow()
 run(f, ["ptt_down", "ptt_up", "transcript:watch the desk",
         "arrived:S4_PLAN", "arrived:S5B_TRACK", "planned"], "")
@@ -405,6 +411,37 @@ for st, label in (("S6_FINETUNE", "a correction in progress"),
     CLOCK[0] += ST.REPLAN_PERIOD_S + 1
     f.feed("tick")
     expect(f.state != "S4_PLAN", f"{label} is not interrupted to go and sweep")
+
+ST.REPLAN_IDLE_S, ST.REPLAN_PERIOD_S = _IDLE, _PERIOD
+
+# ...and 0 means OFF, which is what the study runs with. A feature switched off
+# by a constant has to be switched off by that constant, not merely slowed down.
+f = flow()
+run(f, ["ptt_down", "ptt_up", "transcript:watch the desk",
+        "arrived:S4_PLAN", "arrived:S5B_TRACK", "planned"], "")
+# Inside the period, so only the idle rule could fire -- and it is off. Eight
+# minutes of nothing is far past the 60 s this used to re-sweep on.
+CLOCK[0] += ST.REPLAN_PERIOD_S - 60
+out = f.feed("tick")
+expect(f.state == "S5B_TRACK",
+       f"REPLAN_IDLE_S={ST.REPLAN_IDLE_S:.0f} -> "
+       f"{(ST.REPLAN_PERIOD_S-60)/60:.0f} min of quiet alone never re-sweeps")
+
+# The PERIOD one is deliberately still on: one self-directed sweep per session
+# is the only evidence the robot has any initiative, and 540 s places it in the
+# 8-10 minute gap between the scripted events.
+f = flow()
+run(f, ["ptt_down", "ptt_up", "transcript:watch the plant",
+        "arrived:S4_PLAN", "arrived:S5B_TRACK", "planned"], "")
+CLOCK[0] += ST.REPLAN_PERIOD_S - 30
+f.feed("tick")
+expect(f.state == "S5B_TRACK", "8:30 into the session -- still watching")
+CLOCK[0] += 60
+out = f.feed("tick")
+expect(f.state == "S4_PLAN",
+       f"at {ST.REPLAN_PERIOD_S/60:.0f} min it goes and looks again, once")
+expect(("plan", "watch the plant") in out,
+       "...on the request already on record, not a new one")
 
 print("\n--- transcript_usable thresholds ---")
 for text, want in [("find the blue mug", True), ("", False), ("hm", False),
@@ -457,3 +494,24 @@ CLOCK[0] += ST.REPLAN_PERIOD_S + 1
 f.feed("tick")
 expect(f.state == "S5B_TRACK",
        "the 5-minute timer also waits for the verdict")
+
+
+print("\n--- S8 gives up on its own ---")
+# S8's exit was STOP-only, which assumed a reader who could press it. A
+# participant cannot: S8 is entered from a failed plan, an unusable transcript,
+# a dead camera, and the CoreS3 shows them only STOP without saying what for.
+# 16 s is four passes of the 3.97 s loop -- and `sfx_every = 4` means the robot
+# cries once, sways four times, and stops, instead of crying three times.
+f = flow()
+run(f, ["ptt_down", "ptt_up", "transcript:watch the plant"], "")
+f.feed("plan_failed:503")
+expect(f.state == "S8_ERROR", "a failed plan lands in S8")
+CLOCK[0] += ST.S8_RECOVER_S - 1
+f.feed("tick")
+expect(f.state == "S8_ERROR", f"still drooping just under {ST.S8_RECOVER_S:.0f}s")
+CLOCK[0] += 2
+out = f.feed("tick")
+expect(f.state == "S1_IDLE", f"past {ST.S8_RECOVER_S:.0f}s -> back to idle")
+expect(not f.plan_pending,
+       "anything still in flight is abandoned -- a late transcript must not "
+       "resurrect a turn the person watched it end")

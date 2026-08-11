@@ -269,7 +269,39 @@ class SessionFlow:
             return self.out
 
         if ev == "ok":
+            if self.state == "S8_ERROR":
+                # THE ERROR SCREEN'S BUTTON IS OK, NOT STOP (firmware uiLayout).
+                # Getting out of S8 is an affirmative act -- "I have seen that it
+                # failed" -- and there is nothing to cancel: S8 is reached when a
+                # request was unusable or a plan never arrived, so no watch-spec
+                # exists to discard. Demanding a hold, the gesture the red button
+                # now needs, would be the wrong thing to ask of somebody looking
+                # at a robot that has just given up.
+                #
+                # S8_RECOVER_S still gives up on its own after 16 s. This is the
+                # same exit, reachable at once by whoever is watching, and it
+                # abandons the same in-flight work for the same reason: a
+                # transcript or plan arriving later must not resurrect a turn the
+                # person watched end.
+                self._s8_at = None
+                self.plan_pending = False
+                self._plan_at = self._ptt_up_at = self._ptt_up_first_at = None
+                self._go("S1_IDLE", "OK -- error acknowledged, back to idle")
+                return self.out
             if self.state in ("S7a", "S7b"):
+                # THE BOARD'S COUNT IS AN INBOX, NOT A SCORE. It says how much is
+                # waiting for the person, so acknowledging clears it for the same
+                # reason STOP does: both end the state of having something
+                # unseen. Left running, the number only ever climbs, and a
+                # counter that cannot go down stops being read -- the participant
+                # has no way to tell "one new thing" from "the same seven again".
+                #
+                # Only the BOARD. The page keeps every card, because it answers a
+                # different question -- what has it found for me -- and that
+                # answer should not depend on which button was pressed. See
+                # session/feed.py.
+                self.noticed = 0
+                self._emit("noticed", 0)
                 self._go("S5B_TRACK", "OK -- seen; back to watching")
             return self.out
 

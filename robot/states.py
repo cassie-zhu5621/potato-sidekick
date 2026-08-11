@@ -293,16 +293,28 @@ PAN_RETARGETABLE = ("S5B_TRACK", "S5A_SETTLE")
 # the person is busy, which is the premise of notice delegation. The finding is
 # already in the feed, so the robot goes back to watching instead of escalating.
 # That is the difference between a colleague and an alarm.
-S8_RECOVER_S = 45.0      # S8 gives up and returns to S1_IDLE after this long.
-                         # Its clip is `exit: STOP only`, which was right when
-                         # the only reader was a researcher sitting at the
-                         # keyboard. In a session it is not: S8 is entered from
-                         # a failed plan, an unusable transcript, a dead camera
-                         # -- none of which a PARTICIPANT can clear, and none of
-                         # which they can even name. Without this the robot
-                         # droops until someone walks over, which for the person
-                         # in the chair is indistinguishable from having broken
-                         # it.
+S8_RECOVER_S = 16.0      # S8 gives up and returns to S1_IDLE after this long.
+                         # = FOUR PASSES of its own 3.97 s loop, and the loop is
+                         # the unit that matters here: the participant is not
+                         # counting seconds, they are watching the same droop and
+                         # sway happen again. Four is enough to read as "it has
+                         # stopped trying" and short enough not to become the
+                         # thing they remember about the session.
+                         #
+                         # It also lands on the sound. `sfx_every = 4` fires
+                         # `lost` on pass 1 and would fire it again on pass 5, so
+                         # exiting at four means the robot cries ONCE, sways four
+                         # times, and gives up. At 45 s (11.3 passes) it cried
+                         # three times, which is a machine escalating rather than
+                         # one that has run out of ideas.
+                         #
+                         # WAS 45, and before that STOP-only. STOP-only assumed a
+                         # reader who could press it: S8 is entered from a failed
+                         # plan, an unusable transcript, a dead camera -- none of
+                         # which a PARTICIPANT can clear, or even name. Without a
+                         # timeout the robot drooped until someone walked over,
+                         # which from the chair is indistinguishable from having
+                         # broken it.
                          #
                          # RETURNING TO IDLE IS NOT PRETENDING NOTHING HAPPENED.
                          # S1 is "present, not attending" -- the honest state
@@ -310,12 +322,57 @@ S8_RECOVER_S = 45.0      # S8 gives up and returns to S1_IDLE after this long.
                          # trying, and it is still here. The failure stays in the
                          # log and on the researcher's screen.
                          #
-                         # 45 s is long enough that the droop reads as a held
-                         # posture rather than a stumble (S8's own loop is 4 s,
-                         # so it is seen ~11 times) and short enough that a
-                         # participant is not left waiting on a machine that has
-                         # already given up. Set to 0 or None to restore
-                         # STOP-only.
+                         # Set to 0 or None to restore STOP-only.
+# HOW LONG THE ROBOT WAITS FOR THE JUDGE BEFORE REACTING ANYWAY.
+#
+# The judge answers two things, and only one of them is on the critical path.
+# `describe` never reaches the participant: S7 plays a sound effect, not speech,
+# and the sentence on the feed card is written LATER by the storyboard's own
+# narration call from the strip. So waiting buys exactly one thing -- the
+# pass/fail gate -- and pays for it in the only currency this interaction has,
+# which is arriving while the moment is still happening.
+#
+# MEASURED, over the 33 calls made since the judge was cut down on 2026-08-05.
+# The distribution is BIMODAL, and the second mode is not a tail:
+#
+#   3.3 3.5 3.9 4.0 4.0 4.2 4.3 4.7 4.8 4.8 4.9 5.1 5.7 7.2 7.6 8.1     16
+#                          -- nothing between 8.1 and 10.6 --
+#   10.6 11.4 12.2 12.7 12.9 14.3 14.4 15.8 16.5 17.0 17.2 19.4 19.5
+#   21.0 22.4 39.5 59.4                                                 17
+#
+# Half. Identical images, identical token counts (5863-5869 all day), identical
+# model and tier on both sides -- so the split is the service, and nothing about
+# the request can move it. Replaying the slowest recorded call afterwards gave
+# 2.1 s.
+#
+# 10 s SITS IN THE EMPTY GAP between the two modes, which is the only place a
+# threshold can go without cutting through cases that are alike.
+#
+# IT WAS 0 FOR AN AFTERNOON, and the dry run put it back. The argument for 0 was
+# that a threshold in a bimodal distribution gates about half the findings and
+# not the other half, so a session's three events land under two regimes -- true,
+# and still true. What it weighed that against was a false-report rate assumed to
+# be near zero because the events are acted and the focus tier is narrow. It is
+# not near zero, and the reason is structural rather than incidental:
+#
+#   THERE IS NO DEPTH. `hands_on` is a wrist inside an object's 2D box; the
+#   relations are computed on projections. A person standing IN FRONT OF a plant
+#   and a person touching one are the same picture. Reported 2026-08-08 from the
+#   dry run, and no threshold in perception can separate them, because the
+#   information is not in the image the geometry is reading.
+#
+# A VLM looking at five frames can. So the gate goes back in front, and the
+# deadline stays as the thing that stops a congested service from turning a
+# report into a report about a moment that ended -- which is what it was for.
+#
+# WHAT THIS COSTS, both ways, measured:
+#
+#   typical   1.25 s CV gate + 1.0 s frame window + 2.1 s judge  = ~4.4 s to S7
+#   capped    the same, but never worse than ~12.3 s
+#   about half the findings still arrive ungated, because half the calls land
+#   past 10 s. `judge_agreed` records which, so the rate is in the data.
+JUDGE_DEADLINE_S = 10.0
+
 S7_IGNORED_TIMEOUT_S = 30.0
 
 # How long the loop waits for Whisper before giving up and showing S8. Generous:
@@ -355,7 +412,25 @@ STT_TIMEOUT_S = 15.0
 # See robot_motion/S4_S5_DESIGN.md sec 1.
 #
 # S4 re-fires on two conditions:
-REPLAN_IDLE_S = 60.0     # tracking has seen nothing. The detection is real:
+REPLAN_IDLE_S = 0.0      # OFF for the user study. Was 60.
+                         #
+                         # In a 15-minute session with scripted events at 3, 5
+                         # and 10 minutes, QUIET IS THE NORMAL CONDITION -- so a
+                         # timer that re-sweeps after every quiet minute fired
+                         # about thirteen times, and all three events landed next
+                         # to one. Where the robot happened to be pointing when
+                         # something finally happened was close to random.
+                         #
+                         # The cost is real and accepted: something that matches
+                         # the request at another angle will now be missed. The
+                         # study is testing whether the delegation LOOP works, not
+                         # how much of the room is covered, and a robot that turns
+                         # by itself is unexplainable in the interview -- the
+                         # participant cannot tell 'it re-scanned' from 'it noticed
+                         # something', and neither can the transcript.
+                         #
+                         # Restore to 60 for unattended running. Original note:
+                         # tracking has seen nothing. The detection is real:
                          # *there is nothing here*.
                          #
                          # WAS 30, measured on hardware 2026-08-05 and too short.
@@ -365,11 +440,39 @@ REPLAN_IDLE_S = 60.0     # tracking has seen nothing. The detection is real:
                          # is wrong, and a machine that re-scans every half minute
                          # reads as agitated rather than attentive.
                          # Set to 0 or None to switch the idle re-plan off.
-REPLAN_PERIOD_S = 300.0  # structural, not precautionary. An object that entered
+REPLAN_PERIOD_S = 540.0  # ONE self-directed sweep per session, placed on purpose.
+                         #
+                         # This is the only moment the robot acts on its own
+                         # initiative rather than on a request or a detection --
+                         # it goes and re-checks the room for what has appeared
+                         # or been missed. A participant who never sees it has no
+                         # evidence the thing has any autonomy at all, and the
+                         # interview has nothing to ask about.
+                         #
+                         # 540 s = 9 minutes, and the number is the study
+                         # timeline rather than a round figure. Against the
+                         # scripted events (E1 3-8 min, E2 5-8 min, E3 10-13 min)
+                         # the free windows are 0-3, 8-10 and 13-15:
+                         #
+                         #     300 s -> 5:00 and 10:00   collides with E2 and E3
+                         #     420 s -> 7:00             collides with E2
+                         #     540 s -> 9:00             lands in the 8-10 gap
+                         #     900 s -> 15:00            too late to be seen
+                         #
+                         # A sweep costs ~13 s of not watching (6 s of clip, ~7 s
+                         # of planner), so landing on an event would eat its
+                         # opening. 9:00 sits centred in a two-minute gap, which
+                         # is the margin the "~3 min / ~5 min" of the script
+                         # needs.
+                         #
+                         # The clock starts when the PLAN LANDS, which is the top
+                         # of work-and-watch, and findings do not reset it -- so
+                         # 9:00 is 9:00 whatever else happened.
+                         #
+                         # Restore to 300 for unattended running. Original note:
+                         # structural, not precautionary. An object that entered
                          # the room after the last plan has never been detected,
                          # is not in the candidate set, and can never be chosen.
-                         # The camera sees 58 deg on a body that pans ~115: it
-                         # cannot know what is outside the frame without moving.
                          # A sweep is EPISTEMIC movement -- it is not reporting a
                          # detection, it IS the detecting.
 
@@ -398,6 +501,39 @@ AIM_CHANGED_DEG = 15.0
 # has stopped being a colleague and become a stuck appliance. Going back to the
 # same aim is the honest fallback -- it was told the choice was wrong, not where
 # to look instead.
+# The antenna while the planner is out. NOT a new colour -- see HUE below: colour
+# encodes the KIND of state, and planning and watching are both `cool`
+# (attending). Giving "thinking" its own colour would turn a five-word vocabulary
+# into one label per state, which is the opposite of what a first-time
+# participant needs. The distinction belongs to RHYTHM.
+#
+# The hold is why this exists at all. S4's clip ends at the last station and the
+# head then waits for the VLM -- 6 s on a good evening, 14-62 s during the
+# service slowdowns measured 2026-08-08. The firmware falls back to its own
+# breath after 500 ms of silence, so the light was not frozen; but that fallback
+# was deliberately tuned to BE S1_IDLE's envelope, so the wait read as
+# `cool` colour + `idle` rhythm. Attending, said one way; unoccupied, said the
+# other.
+#
+# Placed against the clips' own measured envelopes:
+#
+#     S1_IDLE     led  10..80   period 1.25 s    slow, dim      unoccupied
+#     S5B_TRACK   led  26..96   period 0.90 s    quicker        watching
+#     S4_PLAN     led  26..223  period 1.23 s    bright accents a shutter per station
+#     -> planning  led 12..70   period 0.70 s    quickest, dimmest
+#
+# QUICKEST AND DIMMEST, and the dimness was got wrong first. The initial value
+# was 30..120, brighter than watching -- but the head is perfectly still through
+# this stretch, and a bright fast pulse on a still body reads as agitation rather
+# than as thought. Under `watching` in level and roughly twice `idle` in rate:
+# the brightness says nothing is being looked at, the speed says something is
+# happening anyway. Turned inward.
+#
+# It stays `cool`. A sixth colour for "thinking" would trade a five-word
+# vocabulary of state KINDS for one label per state, and the participant meets
+# all of it once, for the first time, in a single session.
+PLAN_BREATH = {"period_s": 0.70, "low": 12, "high": 70, "hz": 15}
+
 REAIM_TIMEOUT_S = 2.5    # how long S6 waits for a direction before taking the
                          # sweep's next-best angle itself.
                          #
@@ -431,8 +567,10 @@ STOP_DISCARDS_TASK = True
 # button to know what it does.
 BUTTONS = {
     "PTT":  "hold to speak -- press enters S2, release starts transcription",
-    "OK":   "I saw what you shared -- returns S7 to S5",
-    "STOP": "end the task, return to S1. Available in every state.",
+    "OK":   "I saw it. Returns S7 to S5, and S8 to S1. A TAP.",
+    "STOP": "end the task, return to S1. A HOLD (>= 800 ms in firmware); a tap "
+            "on it sends OK instead, so a brush cannot discard the task. Not "
+            "drawn on `noticed` or `error` at all.",
 }
 
 # The screen vocabulary. (text, buttons). One more entry than there are states:
@@ -448,8 +586,11 @@ SCREENS = {
     "planning":  ("planning...",   ("STOP",)),
     "tracking":  ("tracking...",   ("STOP",)),
     "notthat":   ("not that!?",    ("STOP",)),
-    "noticed":   ("{n} noticed",   ("OK", "STOP")),
-    "error":     ("error",         ("STOP",)),
+    "noticed":   ("{n} noticed",   ("OK",)),        # no cancel on the screen the
+                                                    # participant is most likely
+                                                    # to touch -- see uiLayout
+    "error":     ("error",         ("OK",)),        # leaving S8 is affirmative,
+                                                    # and nothing is discarded
 }
 
 # What counts as an unusable request -> S2 goes to S8 rather than to S3.

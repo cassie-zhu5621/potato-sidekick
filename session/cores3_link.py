@@ -12,7 +12,7 @@ Protocol (line-based, 115200, '
                       EVT LED <0-255> | EVT HUE <WARM|COOL|RED|GREEN|ALARM> |
                       EVT SFX <name> | EVT VOL <0-255> | EVT REST | EVT PING
   CoreS3 -> laptop :  IN PTT_DOWN | IN PTT_UP | IN OK | IN STOP | IN BODYTAP |
-                      IN PONG cores3_sidekick v4
+                      IN PONG cores3_sidekick v5
 
 The board cannot be found by name -- macOS calls it usbmodem-<location id> just
 like the servo adapter -- so find_cores3() asks it instead. See below.
@@ -37,7 +37,7 @@ except ImportError:
 # "v3", this check still said "match", and the antenna was still blue. A version
 # that tracks only the protocol cannot answer the one question it is asked --
 # "is the thing in front of me built from the code in front of me".
-FIRMWARE_V = "v4"
+FIRMWARE_V = "v5"
 
 
 def find_cores3(exclude=(), timeout=4.0, baud=115200, verbose=True):
@@ -50,7 +50,7 @@ def find_cores3(exclude=(), timeout=4.0, baud=115200, verbose=True):
 
     OPENING THE PORT DOES RESET THIS BOARD, and the previous version of this
     function asserted the opposite. Measured on the bench: a bare open followed
-    by a read returns `IN HELLO cores3_sidekick v4` -- the greeting from setup()
+    by a read returns `IN HELLO cores3_sidekick v5` -- the greeting from setup()
     -- which only happens if the board rebooted. So the old sequence lost every
     time it mattered:
 

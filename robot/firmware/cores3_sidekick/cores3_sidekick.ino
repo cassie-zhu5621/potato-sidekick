@@ -38,12 +38,15 @@
  *     EVT LEVEL <0-100>    mic level for the recording bar
  *     EVT VOL <0-255>      speaker volume; 0 for a silent run
  *     EVT REST             end of a run: go quiet, back to idle + warm breath
- *     EVT PING             -> `IN PONG cores3_sidekick v4`
+ *     EVT PING             -> `IN PONG cores3_sidekick v5`
  *
  *   CoreS3 -> Laptop
  *     IN PTT_DOWN / IN PTT_UP     the green button, held
- *     IN OK                       the green button on `noticed`
- *     IN STOP                     the red button, on every screen
+ *     IN OK                       the green button on `noticed` -- OR a TAP on the
+ *                                 red one, from any screen (see uiTouch)
+ *     IN STOP                     the red button HELD for STOP_HOLD_MS. A tap on
+ *                                 it is a mis-touch and sends IN OK instead, so
+ *                                 that brushing it cannot discard the task.
  *     IN BODYTAP                  touch sensor = "not that one"
  *     IN PONG ...                 identity, on request
  *
@@ -307,8 +310,34 @@ void uiLayout() {
   } else if (uiScreen == "recording") {
     // nothing: the finger is already on the button that matters
   } else if (uiScreen == "noticed") {
-    uiBtns[uiNBtn++] = {"OK",   8, 168, 150, 64, COL_GREEN, "OK"};
-    uiBtns[uiNBtn++] = {"STOP", 166, 168, 146, 64, COL_RED, "STOP"};
+    // OK ALONE. This is the screen the participant is looking at when the robot
+    // has just called them over, which makes it the one they are most likely to
+    // touch and the worst place to keep a cancel: STOP discards the watch-spec,
+    // and during the study's work phase that voids every scripted event still to
+    // come. There is nothing to cancel here anyway -- the finding is already in
+    // the feed, and OK is the whole of what this screen asks for.
+    //
+    // Losing STOP from this screen loses nothing: S7 returns to S5 on OK or on
+    // its own timeout, and `tracking` still carries a hold-to-stop.
+    uiBtns[uiNBtn++] = {"OK", 88, 168, 144, 64, COL_GREEN, "OK"};
+  } else if (uiScreen == "error") {
+    // GREEN, AND A TAP, because S8 is the one screen where getting out IS the
+    // affirmative act. A hold would be the wrong gesture to demand of somebody
+    // looking at a robot that has just failed, and there is no task left to
+    // protect -- S8 is reached when a request was unusable or a plan never
+    // arrived, so nothing is discarded by leaving.
+    //
+    // The laptop already gives up by itself after ST.S8_RECOVER_S (16 s). This
+    // makes the same exit reachable immediately by whoever is watching.
+    uiBtns[uiNBtn++] = {"OK", 88, 168, 144, 64, COL_GREEN, "OK"};
+  } else if (uiScreen == "black") {
+    // S1 FILMING ONLY (`EVT UI black`, sent by tools/film_s1.py): a screen
+    // with a state word on it is a printed answer key -- the study's rule is
+    // that the STATE is read from movement/light/sound, so the stimulus must
+    // not caption itself. Pure black, ZERO buttons (the plain else below would
+    // add a STOP, and a phantom touch target on an unlabeled screen is worse
+    // than none). The antenna and speaker are separate channels and keep
+    // running. Never used in a live session.
   } else {
     uiBtns[uiNBtn++] = {"STOP", 88, 168, 144, 64, COL_RED, "STOP"};
   }
@@ -398,6 +427,10 @@ void uiDraw() {
     M5.Display.drawString(uiText(), SCREEN_W / 2, 62);
     M5.Display.setTextSize(4);
     M5.Display.drawString("^_^", SCREEN_W / 2, 100);
+  } else if (uiScreen == "black") {
+    // nothing: the fillScreen at the top already painted it black, and the
+    // final else would print uiText() -- exactly the caption this screen
+    // exists to remove.
   } else {
     M5.Display.setTextColor(TFT_WHITE);
     M5.Display.setTextDatum(middle_center);
@@ -436,6 +469,41 @@ bool uiHit(const UiBtn& b, int x, int y) {
 // PTT_UP, no matter what is on screen when the finger lifts.
 bool pttHeld = false;
 
+// ---- STOP IS HOLD-TO-STOP; A TAP MEANS OK ------------------------------------
+//
+// STOP is a CANCEL: the laptop discards the watch-spec and returns to S1_IDLE
+// (states.py STOP_DISCARDS_TASK). During the study's fifteen-minute work phase
+// the participant sits alone with this screen having been told to do whatever
+// feels natural, and the red button is next to the green one. One brush of it
+// used to end the task -- and it fired on touch-DOWN, so not even a deliberate
+// press was required. Every scripted event after that point could then fire for
+// nobody, and the session was not comparable with anyone else's.
+//
+// So the tap and the hold are separated HERE rather than on the laptop, because
+// the laptop cannot tell them apart: `IN STOP` was the only line STOP ever sent,
+// and no release event followed it. One line in, no duration.
+//
+//   tap   (< STOP_HOLD_MS)  -> IN OK    the same line the green button sends.
+//                                       On `noticed` it returns S7 to S5 -- back
+//                                       to the watch-spec, task intact -- and on
+//                                       every other screen the flow ignores it.
+//                                       So a mis-touch costs nothing anywhere.
+//   hold  (>= STOP_HOLD_MS) -> IN STOP  unchanged, and still available from every
+//                                       screen. §4 needs it: PTT is accepted only
+//                                       from S1_IDLE and STOP is the only route
+//                                       there, so taking a second brief depends
+//                                       on it.
+//
+// The laptop is untouched by this. It still maps `IN OK` -> ok and `IN STOP` ->
+// stop exactly as before; what changed is which finger gesture produces which.
+//
+// stopHeld is a latch for the same reason pttHeld is one: uiSet() clears uiDown
+// on any screen change, so a press that outlives a repaint would otherwise lose
+// its button identity and send neither line.
+static const uint32_t STOP_HOLD_MS = 800;
+bool     stopHeld  = false;
+uint32_t stopSince = 0;
+
 void uiTouch() {
   auto t = M5.Touch.getDetail();
   if (t.wasPressed()) {
@@ -445,18 +513,40 @@ void uiTouch() {
         String id = uiBtns[i].id;
         if      (id == "PTT")  { pttHeld = true; Serial.println("IN PTT_DOWN"); }
         else if (id == "OK")   { Serial.println("IN OK");   M5.Speaker.tone(1600, 60); }
-        else if (id == "STOP") { pttHeld = false; Serial.println("IN STOP"); M5.Speaker.tone(700, 90); }
+        else if (id == "STOP") { pttHeld = false;
+                                 stopHeld = true; stopSince = millis();
+                                 M5.Speaker.tone(1200, 25); }   // touched, not yet acted on
         break;
       }
     }
     return;
   }
 
+  // THE HOLD COMMITS WHILE THE FINGER IS STILL DOWN, not on release. Two
+  // reasons, and the second is the one that matters: the participant hears the
+  // stop tone at the moment it becomes a stop, so the gesture teaches itself
+  // rather than being explained; and a commit that waited for release could be
+  // lost the same way IN PTT_UP once was, if the screen repaints in between.
+  if (stopHeld && millis() - stopSince >= STOP_HOLD_MS) {
+    stopHeld = false;
+    Serial.println("IN STOP");
+    M5.Speaker.tone(700, 90);
+  }
+
   // Release. Two independent triggers, because one hang is one too many:
   // the release EVENT, and -- if that is missed while the screen is being
   // repainted -- simply no longer having a finger down.
-  bool up = t.wasReleased() || (pttHeld && M5.Touch.getCount() == 0);
+  bool up = t.wasReleased() || ((pttHeld || stopHeld) && M5.Touch.getCount() == 0);
   if (!up) return;
+
+  // Lifted before the hold matured: a tap, and a tap is OK. Sent here and not in
+  // the press branch so that the two outcomes are mutually exclusive by
+  // construction -- one touch can never produce both lines.
+  if (stopHeld) {
+    stopHeld = false;
+    Serial.println("IN OK");
+    M5.Speaker.tone(1600, 60);
+  }
 
   if (uiDown >= 0) {
     String id = uiBtns[uiDown].id;
@@ -589,7 +679,7 @@ void handleLine(String line) {
     setAntennaHue(255, 242, 224);   // = WARM. Keep in sync with HUE above.
     uiSet("idle");
   }
-  else if (cmd == "PING") Serial.println("IN PONG cores3_sidekick v4");
+  else if (cmd == "PING") Serial.println("IN PONG cores3_sidekick v5");
 }
 
 // ---------------- setup / loop -------------------------------------------------
@@ -602,7 +692,7 @@ void setup() {
   antennaInit();
   tapInit();
   uiDraw();                 // the idle screen, immediately -- no legacy layout
-  Serial.println("IN HELLO cores3_sidekick v4");
+  Serial.println("IN HELLO cores3_sidekick v5");
 }
 
 void loop() {
