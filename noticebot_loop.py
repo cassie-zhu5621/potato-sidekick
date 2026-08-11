@@ -33,7 +33,7 @@ Run:
   python3 noticebot_loop.py --cam 0 --no-view          # headless
 """
 from __future__ import annotations
-import argparse, datetime as dt, json, os, sys, threading, time
+import argparse, datetime as dt, json, math, os, sys, threading, time
 from collections import deque
 
 import cv2
@@ -58,6 +58,13 @@ from planning.provider import provider_name
 # direction changes and the watch-spec survives.
 PAN_KEYS = {"z": 60.0, "x": 30.0, "c": 0.0, "v": -30.0, "b": -60.0}
 
+# How long the main loop may go without an iteration before the watchdog
+# assumes it is wedged and dumps the stacks. Generously above the slowest
+# legitimate tick -- a perception step with YOLO-World plus BlazePose runs a few
+# hundred ms, and a `_goto` across the pan range sleeps up to ~1 s -- so this is
+# not a latency alarm. It answers one question only: is it still running.
+STALL_WARN_S = 6.0
+
 SETTLE_MS = 180.0        # stillness required before a frame is usable
 DEFAULT_PERCEIVE_HZ = 1.0  # Grounding DINO default; YOLO-World can use --cv-hz 4
 
@@ -79,7 +86,11 @@ class HeadCam:
         if not self.cap.isOpened():
             raise RuntimeError(f"cannot open camera {index} -- try --list-cams")
         self.latest, self.seq, self._stop = None, 0, False
-        self.event_frames = deque(maxlen=40)  # ~4 seconds at 10 Hz, JPEG-compressed
+        # ~7 s at 10 Hz, JPEG-compressed. The judge reaches back 4 s
+        # (EVENT_OFFSETS_S) and the deque has to outlive that with room to
+        # spare, or the oldest offset resolves to whatever happens to still be
+        # in it -- silently, since nearest-match always returns something.
+        self.event_frames = deque(maxlen=70)
         self._last_event_frame = 0.0
         threading.Thread(target=self._run, daemon=True).start()
         t0 = time.time()
@@ -320,11 +331,36 @@ def main():
     ap.add_argument("--vocab", default="person,laptop,chair,cup,bottle,book,"
                                        "cell phone,backpack,keyboard,mouse")
     ap.add_argument("--conf", type=float, default=0.3)
+    ap.add_argument("--judge-deadline", type=float, default=None,
+                    help=f"seconds to wait for the group judge before reporting "
+                         f"anyway (default {ST.JUDGE_DEADLINE_S:.0f}). 0 = never "
+                         f"wait: the CV gate alone decides when S7 plays, which "
+                         f"removes the ~50/50 gated/ungated split the deadline "
+                         f"introduces. The judge still RUNS and its verdict is "
+                         f"still recorded, so the disagreement rate is measured "
+                         f"either way -- it just stops being in the critical path.")
+    ap.add_argument("--synonym-prompt", dest="synonym_prompt",
+                    action=argparse.BooleanOptionalAction, default=True,
+                    help="ask an open-vocab detector for every name of an object "
+                         "('phone' also asks for 'cell phone', 'smartphone', ...). "
+                         "More names should mean more frames in which a small "
+                         "half-occluded object is found -- UNMEASURED on this rig, "
+                         "so it is a flag. --no-synonym-prompt asks only for the "
+                         "words the plan used. Compare with grep '[relevance]'.")
     ap.add_argument("--cv-hz", type=float,
                     default=float(os.environ.get("NOTICEBOT_CV_HZ", DEFAULT_PERCEIVE_HZ)),
                     help="perception samples per second (default 1 for Grounding DINO; "
                          "try 4 with YOLO-World)")
-    ap.add_argument("--persist", type=int, default=2,
+    # WAS 2. For relation 9 it was a second copy of a rule already enforced:
+    # `sustain_s` requires the contact to HOLD, and `persist` then required the
+    # result of that to hold again. Together with sustain=1.0 at --cv-hz 4 the
+    # gate needed 1.5 s of unbroken contact before a story could even open, on
+    # top of the reach that had to land in the box in the first place. The other
+    # relations that need debouncing carry their own (`gathering` votes over a
+    # 1.5 s window; approach and hands-on are time-based), so this layer was
+    # mostly paying for itself twice. Raise it back with --persist if a run turns
+    # out to be twitchy.
+    ap.add_argument("--persist", type=int, default=1,
                     help="frames a relation must hold before it counts")
     ap.add_argument("--cooldown", type=float, default=15.0,
                     help="seconds before the same entry can fire again")
@@ -361,6 +397,15 @@ def main():
             suffix += 1
     a.feed_dir = os.path.abspath(a.feed_dir)
     os.makedirs(a.feed_dir, exist_ok=True)
+    # The tablet beside the robot is pointed at session_feed/latest.html once and
+    # never again; this is what tells that page which run is current. Written
+    # before anything else can fail, so the address is live even for a session
+    # that goes on to produce nothing.
+    try:
+        from session.review import write_latest
+        write_latest(a.feed_dir)
+    except Exception as exc:
+        print(f"[feed] latest.html not written: {str(exc)[:80]}")
     audit_dir = os.path.join(a.feed_dir, "llm")
     os.makedirs(audit_dir, exist_ok=True)
     audit_lock = threading.Lock()
@@ -539,7 +584,8 @@ def main():
             view = PlanView(detector=a.detector,
                             vocab=[v.strip() for v in a.vocab.split(",")],
                             conf=a.conf, persist=a.persist,
-                            cooldown=a.cooldown, tau_gap=a.tau_gap)
+                            cooldown=a.cooldown, tau_gap=a.tau_gap,
+                            synonym_prompt=a.synonym_prompt)
             print(f"[cv] ready ({a.detector})")
         except Exception as e:
             # Said loudly, and the session still runs: the motion machine and the
@@ -578,6 +624,12 @@ def main():
 
     stt = STT(on_transcript, enabled=not a.no_stt,
               record_dir=os.path.join(a.feed_dir, "audio"))
+    # BEFORE A PARTICIPANT ARRIVES, not after they have spoken. A dead input
+    # produces a correctly-sized wav of zeros and an empty transcript, which is
+    # indistinguishable from someone saying nothing -- and on 2026-08-08 it ran
+    # that way for half an hour. The check costs 0.4 s and names the device.
+    if not a.no_stt:
+        stt.probe()
 
     def act(kind, val):
         if kind == "state":
@@ -594,14 +646,29 @@ def main():
             if link:
                 link.event("NOTICED", int(val))
             if int(val) == 0:
-                # STOP starts a fresh task. Clear only the live presentation;
-                # files in this E2E run remain on disk as the audit record.
-                if UI is not None:
-                    with UI.LOCK:
-                        UI.STATE["feed"] = []
-                        UI.STATE["thumbs"] = {}
-                        UI.STATE["frames"] = {}
-                        UI.STATE["collecting"] = []
+                # A COUNT RESET ON THE BOARD, AND NOTHING ELSE (2026-08-08).
+                #
+                # This used to also wipe the page: feed, thumbs, frames. The two
+                # halves of the feature disagreed. Every record is stamped with
+                # `request` and `plan_generation` precisely so that "a session
+                # where the participant asks twice" does not become one
+                # undifferentiated list (Storyboard.__init__) -- provenance that
+                # only means anything if records from different requests coexist.
+                # On disk they did; on the page they never could.
+                #
+                # Nor was the wipe escapable: PTT is accepted only from S1_IDLE
+                # and STOP is the only route there, so asking a second question
+                # REQUIRED destroying the answer to the first. Observed on
+                # 2026-08-08 -- a finding confirmed, spoken, and written to
+                # attention_log.jsonl, showing as 0 on the page.
+                #
+                # Cancelling stories mid-collection is a different event and now
+                # hangs off `idle`, next to the story.reset() it is the display
+                # half of. It must not happen here, because OK resets the board
+                # too and OK does NOT abandon anything: the story that produced
+                # the finding is usually still collecting its later panels, and
+                # dropping the spinner while the card still arrives later would
+                # make the page contradict itself.
                 return
             # EVERY finding opens a story, whatever produced it. This hangs off
             # the flow's `noticed` emission rather than off the detector, because
@@ -635,7 +702,8 @@ def main():
                     # The RAW frame goes in the panel, not the annotated one: the
                     # strip is a record of what happened in the room and will be
                     # read by people who are not debugging a detector.
-                    story.open(e, fr, truth, viz, idx)
+                    story.open(e, fr, truth, viz, idx,
+                               pose=player.snapshot().get("pose_deg"))
         elif kind == "rec":
             if val == "start":
                 stt.start()
@@ -680,6 +748,14 @@ def main():
             sweep.active = False
             if story is not None:
                 story.reset()
+            # The display half of that reset. `collecting` is the spinner row for
+            # stories still gathering panels; STOP has just voided them, so the
+            # row has to go with them or the page advertises work that will never
+            # produce a card. The FINISHED cards are untouched -- see the note in
+            # the `noticed` handler.
+            if UI is not None:
+                with UI.LOCK:
+                    UI.STATE["collecting"] = []
             ctxd["plan_generation"] = int(ctxd.get("plan_generation", 0)) + 1
             if view is not None:
                 view.executor, view.spec = None, None
@@ -778,6 +854,24 @@ def main():
             ctxd["spec"] = res["spec"]
             print(f"[planner] {len(v)} violation(s); "
                   f"watch={len((ctxd['spec'] or {}).get('watch', []) or [])} entries")
+            # AND WHAT THEY ACTUALLY WATCH FOR, in words.
+            #
+            # "watch=3 entries" was the whole report, and on 2026-08-08 it cost an
+            # evening: "Looking at people joining on the large board" produced
+            # gaze(1), approach(7) and gathering(10) -- no hands_on(9) anywhere --
+            # so a person drawing at that board could not fire any card in the
+            # plan. She drew for several minutes. Every [cv] and [gate] line was
+            # about why a relation was false; not one could say that the relation
+            # she was performing was NOT BEING WATCHED AT ALL. That is the single
+            # most consequential fact about a plan and it was the one thing the
+            # plan did not print.
+            from planning.judge import _RELATION_CLAIMS
+            for e in (ctxd["spec"] or {}).get("watch", []) or []:
+                ids = list(e.get("all") or []) + list(e.get("any") or []) + list(e.get("then") or [])
+                what = " + ".join(_RELATION_CLAIMS.get(i, f"relation {i}") for i in ids)
+                on = e.get("on")
+                print(f"  will fire on: {what}{f' -- {on}' if on else ''}"
+                      f"   [{e.get('label', '')}]")
             if v:
                 print("  " + "; ".join(map(str, v)))
             if view is not None:
@@ -861,9 +955,19 @@ def main():
 
     ctxd = {}
     ctx, last_state, last_perceive, last_pub, last_level = {}, None, 0.0, 0.0, 0.0
+    last_whynot = 0.0        # throttle for the [cv] diagnostic
+    last_plan_led = 0.0      # throttle for the planning-hold breath
     shown = None            # the last frame the overlay was computed FROM
-    event_frames = cam.event_frames if cam is not None else deque(maxlen=40)
+    event_frames = cam.event_frames if cam is not None else deque(maxlen=70)
     event_candidates = []                 # wait through t+1.0 before Gemini confirm
+    # How long S7 waits on the judge. A CLI override of ST.JUDGE_DEADLINE_S, read
+    # once: the value has to be the same for every finding in a session or the
+    # data has two regimes in it, which is the exact problem it exists to remove.
+    judge_deadline = (ST.JUDGE_DEADLINE_S if a.judge_deadline is None
+                      else float(a.judge_deadline))
+    if judge_deadline <= 0:
+        print("[confirm] judge deadline 0 -- S7 fires on the CV gate alone; "
+              "the judge still runs, for the record only")
     confirmed_findings = []               # worker -> main-loop handoff
     # TWO JOBS, TWO FIELDS. `busy` used to mean both "a candidate is queued"
     # and "a judge is in flight", and every release cleared both -- including
@@ -883,7 +987,12 @@ def main():
     # `inflight` is owned by the worker alone -- incremented before the call,
     # decremented in a finally -- so no unrelated event can open the gate on a
     # request that has not come back.
-    candidate_gate = {"busy": False, "winner": None, "inflight": 0}
+    # `awaiting` is the candidate whose judge is out, held so the deadline can
+    # find it. Cleared by whichever gets there first; a judge that lands after
+    # the deadline finds `fired_early` on its own candidate and records rather
+    # than fires.
+    candidate_gate = {"busy": False, "winner": None, "inflight": 0,
+                      "awaiting": None}
     from planning.sweep_plan import Sweep
     sweep = Sweep(feed_dir=a.feed_dir)
     os.makedirs(a.feed_dir, exist_ok=True)
@@ -902,7 +1011,9 @@ def main():
         threading.Thread(target=_warm_gemini, daemon=True).start()
 
     def event_jpegs(onset):
-        """Five nearest raw frames at -1,-.5,0,+.5,+1 seconds."""
+        """The five nearest raw frames for the judge. See planning/event_frames:
+        the offsets are all historical, so they exist the moment a candidate
+        fires and nothing has to be waited for."""
         return select_temporal_frames(event_frames, onset)
 
     def publish_judgment(entry, status, note="", generation=None):
@@ -945,6 +1056,8 @@ def main():
         result = judge_candidate_group(candidate["images"], entries, taste,
                                        request=candidate.get("request", ""))
         elapsed = time.monotonic() - started
+        if candidate_gate.get("awaiting") is candidate:
+            candidate_gate["awaiting"] = None
         audit_write("judge_group", {
             "claims": claims, "entries": entries, "group_size": len(entries),
             "onset": candidate["onset"],
@@ -954,6 +1067,34 @@ def main():
         }, candidate["images"])
         print(f"[timing] {provider_name()} group judge ({len(entries)} cards, "
               f"one call): {elapsed:.2f}s")
+
+        # THE DEADLINE GOT THERE FIRST. Do not fire again -- S7 is already
+        # playing -- but do not throw the verdict away either. Whether the gate
+        # would have agreed is the number that says what the deadline cost, and
+        # it only exists if it is written down as it happens.
+        if candidate.get("fired_early"):
+            agreed = int(result.get("selected_index", -1)) >= 0
+            # Onto the record, not just the screen. This is the only number that
+            # says what firing on the CV gate alone costs, and a terminal line
+            # is not a record -- it scrolls.
+            if story is not None:
+                story.judge_agreed = agreed
+                # Late, but usually still ahead of the story closing (`linger`
+                # is 6 s), so the card can carry the good sentence even on the
+                # deadline path. Only if it does not arrive in time does the
+                # strip fallback run.
+                if not story.describe:
+                    story.describe = str(result.get("note")
+                                         or result.get("feedback") or "")
+            note = (f"Landed {elapsed:.0f}s late, after the report had gone out. "
+                    + ("It agrees." if agreed else
+                       "IT WOULD HAVE REJECTED THIS: " + str(result.get("note") or "")))
+            for entry in entries:
+                publish_judgment(entry, "confirmed" if agreed else "rejected",
+                                 note, candidate["generation"])
+            print(f"[confirm] late judge ({elapsed:.1f}s) "
+                  f"{'agrees' if agreed else 'DISAGREES'} with the deadline report")
+            return
 
         selected = result.get("selected_index", -1)
         rows = {row.get("index"): row for row in result.get("candidate_results", [])}
@@ -980,10 +1121,67 @@ def main():
             return
         candidate["entry"] = winner
         candidate_gate["winner"] = winner_label
+        # THE SENTENCE TRAVELS WITH THE FINDING. Written from five separate
+        # frames at the moment the gate fired, with the request in hand -- see
+        # Storyboard._finalize for why that is a better witness than the strip.
+        if story is not None:
+            story.describe = str(result.get("note") or result.get("feedback") or "")
         confirmed_findings.append((candidate, result))
+
+    # ---- WHEN IT HANGS, SAY WHERE ----------------------------------------
+    #
+    # 2026-08-08: the loop froze after PTT_UP and Ctrl-C would not reach it. A
+    # KeyboardInterrupt is caught below and the cleanup is clean, so if the
+    # signal never lands the main thread is inside something that does not hand
+    # the interpreter back -- a C extension mid-call, or a lock held by a worker
+    # that is itself stuck. From the outside those look identical, and neither
+    # leaves a trace, so the session was lost with nothing to debug from.
+    #
+    # Two ways out of that, both cheap:
+    #
+    #   SIGUSR1  ->  every thread's stack, on demand, from another terminal.
+    #   watchdog ->  the same dump WITHOUT being asked, the moment the loop
+    #                stops ticking. It has to be unasked: the hang takes the
+    #                terminal with it, so a diagnostic that needs the terminal
+    #                is a diagnostic that is never run.
+    #
+    # The watchdog only ever prints. Killing the process itself is tempting and
+    # wrong: torque would stay engaged on a robot nobody is watching, and the
+    # STOP path below is what puts it down.
+    import faulthandler
+    import signal
+    faulthandler.enable()
+    try:
+        faulthandler.register(signal.SIGUSR1, all_threads=True, chain=False)
+        print(f"[loop] pid {os.getpid()} -- `kill -USR1 {os.getpid()}` dumps "
+              f"every thread's stack if it ever stops responding")
+    except (AttributeError, ValueError):
+        pass          # no SIGUSR1 on this platform; the watchdog still runs
+
+    beat = {"t": time.time(), "warned": False}
+
+    def _watchdog():
+        while True:
+            time.sleep(1.0)
+            late = time.time() - beat["t"]
+            if late > STALL_WARN_S and not beat["warned"]:
+                beat["warned"] = True
+                print(f"\n[loop] !! MAIN LOOP HAS NOT TICKED FOR {late:.0f}s. "
+                      f"Stacks for every thread follow; the topmost frame of "
+                      f"MainThread is where it is stuck. Ctrl-C may not reach "
+                      f"it -- Ctrl-\\ (SIGQUIT) will.", flush=True)
+                faulthandler.dump_traceback(all_threads=True)
+            elif late <= STALL_WARN_S:
+                beat["warned"] = False
+
+    threading.Thread(target=_watchdog, daemon=True).start()
 
     try:
         while True:
+            # First statement in the iteration on purpose: anything above it
+            # would be invisible to the watchdog, and the last hang was in the
+            # handling of an input event, not in the work that follows it.
+            beat["t"] = time.time()
             snap = player.snapshot()
 
             # the browser's context box is a free remote input: type what the
@@ -993,6 +1191,54 @@ def main():
                 with UI.LOCK:
                     sentence = UI.STATE.get("pending_context")
                     UI.STATE["pending_context"] = None
+                    raw_spec = UI.STATE.get("pending_spec")
+                    UI.STATE["pending_spec"] = None
+                # ---- THE RESEARCHER'S OVERRIDE -------------------------------
+                #
+                # Hand-corrected watch entries, installed WITHOUT re-planning.
+                # Until now the only way to change what the robot watches was to
+                # say the brief again, which re-sweeps and calls the VLM -- 6 s
+                # on a good evening and 62 s during the slowdowns measured
+                # 2026-08-08 -- with a participant sitting there. This path
+                # touches neither: it compiles the edited entries and swaps the
+                # executor.
+                #
+                # Validated with the planner's own `validate`, so a hand-edit
+                # cannot install something the VLM would not have been allowed
+                # to. A rejected edit changes nothing and says why on the page;
+                # the running spec is never left in a half-applied state.
+                if raw_spec is not None and view is not None:
+                    from planning.planner import validate as _validate
+                    err = ""
+                    try:
+                        rows = json.loads(raw_spec)
+                        base = dict(view.spec or {})
+                        base["watch"] = [
+                            {"all": [int(i) for i in (r.get("ids") or [])],
+                             "on": (r.get("on") or "").strip() or None,
+                             "within_s": 5.0,
+                             "label": (r.get("label") or "").strip()
+                                      or f"manual {n + 1}"}
+                            for n, r in enumerate(rows)]
+                        # `on: None` must not survive as a key for relations that
+                        # forbid an object -- validate() checks arity.
+                        for e in base["watch"]:
+                            if e["on"] is None:
+                                e.pop("on")
+                        v = _validate(base, "restricted")
+                        if v:
+                            err = "not installed:\n" + "\n".join(map(str, v))
+                        elif view.set_plan(base, view.context):
+                            print(f"[manual] watch-spec replaced by hand: "
+                                  f"{[(e['all'], e.get('on')) for e in base['watch']]}")
+                        else:
+                            err = "not installed: set_plan refused it"
+                    except Exception as exc:
+                        err = f"not installed: {str(exc)[:140]}"
+                    if err:
+                        print(f"[manual] {err}")
+                    with UI.LOCK:
+                        UI.STATE["spec_error"] = err
                 with UI.LOCK:
                     pan_req = UI.STATE.get("pending_pan")
                     UI.STATE["pending_pan"] = None
@@ -1041,6 +1287,29 @@ def main():
                         # route.
                         print(f"[ui] typed transcript: {sentence!r}")
                         stt.manual(sentence)
+            # ---- THE ANTENNA WHILE THE PLANNER IS OUT ------------------------
+            #
+            # `plan_pending` and not the clip state: the player has already run
+            # S4 to its end and moved on, while the request is still in flight.
+            # That gap is the only stretch in a session where the robot is doing
+            # something the person cannot see, and it is measured in seconds --
+            # 6 on a good evening, 14-62 during the 2026-08-08 slowdowns.
+            #
+            # The light was not frozen before this: the firmware breathes on its
+            # own after 500 ms of silence. But that fallback was tuned to be
+            # S1_IDLE's envelope, so the wait said `cool` in colour and `idle` in
+            # rhythm. Same colour, quicker rhythm -- see ST.PLAN_BREATH.
+            if link and getattr(flow, "plan_pending", False):
+                _pb, _t = ST.PLAN_BREATH, time.time()
+                if _t - last_plan_led >= 1.0 / _pb["hz"]:
+                    last_plan_led = _t
+                    phase = (_t % _pb["period_s"]) / _pb["period_s"]
+                    # raised cosine: no corner at the bottom of the breath
+                    lvl = _pb["low"] + (_pb["high"] - _pb["low"]) * \
+                        (0.5 - 0.5 * math.cos(2 * math.pi * phase))
+                    counts["led"] += 1
+                    link.led(int(lvl))
+
             if snap["state"] != last_state and snap["state"]:
                 announce(snap["state"])
                 # AND tell the flow, which is how the SCREEN follows the robot.
@@ -1163,6 +1432,17 @@ def main():
                     ctx["frames_seen"] = ctx.get("frames_seen", 0) + 1
                     if view is not None:
                         fired = view.step(frame, now)
+                        # SAY WHY NOTHING FIRED, while it is not firing. Every
+                        # 8 s of watching with no candidate, name the first
+                        # broken link -- no pose / object not detected /
+                        # geometry -- so "it did not trigger" is attributable
+                        # during the session rather than reconstructed after it
+                        # from a log that never recorded the reason.
+                        if not fired and now - last_whynot > 8.0:
+                            reason = view.why_not()
+                            if reason:
+                                last_whynot = now
+                                print(f"[cv] {reason}")
                         # Keep the frame the overlay was COMPUTED FROM. Drawing a
                         # A sampled skeleton onto a faster raw stream is what made the
                         # skeleton lag behind the person -- the boxes were never
@@ -1203,8 +1483,48 @@ def main():
                             f"CV gate passed with {len(entries)} same-moment card(s); collecting five frames.",
                             ctxd.get("plan_generation", 0),
                         )
+                    # WITH NO DEADLINE, THE JUDGE IS NOT A STEP AT ALL, and
+                    # that includes its frame window. `due` is +1.0 s because
+                    # the judge wants five frames spanning the onset
+                    # (t-1.0 .. t+1.0); the REPORT never needed them. Waiting
+                    # for them anyway would leave a second of the judge's
+                    # latency in a path that is supposed to be free of it --
+                    # and that second is on top of the ~1.25 s the CV gate
+                    # already spends on sustain + persist.
+                    #
+                    # The candidate still goes on to collect its frames and be
+                    # judged; it is just no longer what the robot is waiting
+                    # for. `fired_early` makes the late verdict record instead
+                    # of fire, exactly as on the deadline path.
+                    fire_now = judge_deadline <= 0
+                    if fire_now:
+                        from planning.judge import pick_winner
+                        _i = pick_winner(entries)
+                        if _i >= 0 and a.feedback == "robot":
+                            ctxd["entry"] = entries[_i]
+                            ctxd["frame"] = frame.copy() if frame is not None else None
+                            ui_events.append("finding")
+                            candidate_gate["winner"] = entries[_i].get("label")
+                            print(f"[confirm] CV gate -- reporting now: "
+                                  f"{candidate_gate['winner']}")
+                        elif _i < 0:
+                            fire_now = False
                     event_candidates.append({
-                        "entries": entries, "onset": now, "due": now + 1.0,
+                        # `due` USED TO BE now + 1.0, because the frame window
+                        # straddled the onset and the +1.0 s frame did not exist
+                        # yet. That second sat on the critical path in front of
+                        # a call that usually takes two, every single time. The
+                        # offsets are now entirely in the past
+                        # (EVENT_OFFSETS_S), so the evidence is already in the
+                        # camera's deque and the request can go out at once.
+                        #
+                        # Kept as a field rather than removed: it is the seam
+                        # where "collect the evidence" and "send it" are still
+                        # separable, and a future window that needs to wait
+                        # again should move this number rather than reintroduce
+                        # a sleep somewhere else.
+                        "entries": entries, "onset": now, "due": now,
+                        "fired_early": fire_now,
                         "generation": ctxd.get("plan_generation"),
                         # Captured WITH the candidate, alongside its generation.
                         # The judge is asked to prefer the card most relevant to
@@ -1232,18 +1552,108 @@ def main():
                                          candidate["generation"])
                     candidate_gate["busy"] = False
                     continue
+                # Held so the DEADLINE can find it. The worker thread cannot be
+                # cancelled -- and is not: it lands late and its verdict is
+                # recorded beside the finding it did not gate.
+                # time.time(), NOT monotonic: the deadline below is compared
+                # against the loop's `now`, which is wall clock. Mixing the two
+                # made every difference astronomically large, so the deadline
+                # fired instantly whatever it was set to -- the 0 default looked
+                # right and --judge-deadline 10 was a knob that did nothing.
+                candidate["sent_at"] = time.time()
+                candidate_gate["awaiting"] = candidate
                 threading.Thread(target=confirm_candidate_group, args=(candidate,),
                                  daemon=True).start()
+
+            # ---- the judge is taking too long: react anyway ----
+            #
+            # Waiting buys the pass/fail gate and nothing else. `describe` never
+            # reaches the participant -- S7 plays a sound effect, not speech, and
+            # the sentence on the feed card is written later by the storyboard's
+            # own narration of the strip. So the cost of waiting is paid in the
+            # only currency this interaction has: arriving while the moment is
+            # still in the room.
+            #
+            # The card is picked by pick_winner, the SAME rule the judge path
+            # uses, because it was never a judgement -- most relation ids wins,
+            # ties to CV's order. A second rule written beside the first is how
+            # two sessions would disagree about which event they recorded.
+            waiting = candidate_gate.get("awaiting")
+            if (waiting is not None and not waiting.get("fired_early")
+                    and now - waiting["sent_at"] >= judge_deadline):
+                candidate_gate["awaiting"] = None
+                if waiting["generation"] != ctxd.get("plan_generation"):
+                    candidate_gate["busy"] = False
+                else:
+                    from planning.judge import pick_winner
+                    idx = pick_winner(waiting["entries"])
+                    if idx < 0:
+                        candidate_gate["busy"] = False
+                    else:
+                        waiting["entry"] = waiting["entries"][idx]
+                        waiting["fired_early"] = True
+                        candidate_gate["winner"] = waiting["entry"].get("label")
+                        print("[confirm] "
+                              + ("not waiting for the judge"
+                                 if judge_deadline <= 0 else
+                                 f"judge past {judge_deadline:.0f}s")
+                              + f" -- reporting: {candidate_gate['winner']}")
+                        for entry in waiting["entries"]:
+                            publish_judgment(
+                                entry, "candidate",
+                                ("Reported straight off the CV gate. The judge "
+                                 "is still running and its verdict will be "
+                                 "recorded here when it lands."
+                                 if judge_deadline <= 0 else
+                                 f"Reported without waiting -- the judge passed "
+                                 f"{judge_deadline:.0f}s. Its verdict will be "
+                                 f"recorded here when it lands."),
+                                waiting["generation"])
+                        if a.feedback == "robot":
+                            ctxd["entry"] = waiting["entry"]
+                            ctxd["frame"] = waiting["frame"]
+                            ui_events.append("finding")
+                        else:
+                            candidate_gate["busy"] = False
 
             # Open bursts advance whenever there is a frame and an open burst --
             # NOT only while watching. A story that stops collecting because the
             # robot changed state loses its follow-through, which is the half that
             # says what the moment turned into.
+            #
+            # BUT ONLY WHEN THE HEAD IS STILL, for the same reason perception is
+            # gated above, and it took a real strip to see how badly it mattered.
+            # The camera is ON THE HEAD, and a story opens at the instant S7
+            # starts swinging it. Feeding those frames in did two things:
+            #
+            #   - the panels recorded the ROBOT TURNING, not the room. A saved
+            #     3-shot strip reads: blurred mid-turn, the participant facing
+            #     the camera because the robot had turned to her, then a wall.
+            #     The narration was written from the middle one -- "a woman
+            #     looking towards the camera" -- which describes her reacting to
+            #     the robot rather than the thing she asked it to watch.
+            #   - it DEFEATED THE KEYFRAME TEST. `scene_diff` asks whether the
+            #     picture changed; a head turn changes all of it, so every
+            #     interval produced a panel no matter how still the room was.
+            #     Hence "3 shots every time, even when I do not move" -- the
+            #     shots were counting the robot's own motion.
+            #
+            # `story.step` is a no-op with no open burst, so gating it costs
+            # nothing when nothing is being collected. The burst's own clocks
+            # (`ends_at`, `next`) run on wall time and are unaffected: a story
+            # still closes on schedule, it just does not photograph the swing.
             if story is not None and frame is not None:
                 ctxd["frame"] = frame
+            if story is not None and frame is not None and settled:
+                # THE POSE TRAVELS WITH THE FRAME. The camera is on the head,
+                # so "is this the same shot" is a question about the neck, not
+                # about the picture -- and the picture cannot answer it (a room
+                # that changed and a head that moved look identical to a pixel
+                # difference).
                 story.step(frame,
                            view.truth if view else {}, view.viz if view else {},
-                           view.statuses if view else [])
+                           view.statuses if view else [],
+                           pose=snap.get("pose_deg"))
 
             # ---- the live view
             # While watching, show the LAST ANNOTATED frame -- the one the overlay

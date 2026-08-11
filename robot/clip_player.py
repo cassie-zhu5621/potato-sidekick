@@ -102,6 +102,15 @@ def shift_pan_centre(frames, to_deg, verbose=True):
     shake starts at one end of its own swing, so the first frame is an extreme;
     centring on it would leave the gesture lopsided about the person by half the
     amplitude.
+
+    S7b (clip v5) is the OPPOSITE case and lands here anyway: its pan is a pure
+    bearing, held for the whole loop, with no shape at all. A constant is
+    trivially its own midpoint, so the same arithmetic aims it -- but note that
+    nothing is being centred and the `[face]` in the log line is a misnomer
+    there: S7b points at the FINDING, not at the person. It is routed here
+    rather than through `remap_share_pan` because a two-point rescale needs two
+    plateaus, and applying one to a single-plateau curve would work by accident.
+    See the header of generate_s7_beckon.py for why the second plateau went.
     """
     if not frames:
         return frames
@@ -660,11 +669,26 @@ class ClipPlayer:
             # the authored -25 -- the robot pointing at a template angle while it
             # knew perfectly well where it had just been looking. One unknown was
             # discarding the other one's answer.
+            #
+            # S7b NO LONGER NAMES THE PERSON (clip v5, 2026-08-08), so it takes
+            # the translation rather than the remap. Its pan is one constant for
+            # the whole loop, and a two-point remap on a curve with a single
+            # plateau has nothing to rescale between -- it would still land
+            # correctly, but by accident, and the next reader would conclude
+            # from the call site that S7b still crosses. The clip changed
+            # because the participant places the robot freely and nothing
+            # measures where they then sit; see generate_s7_beckon.py's header.
             if nxt in ("S7a", "S7b"):
-                seat = (self._user_pan if self._user_pan is not None
-                        else ST.USER_PAN_AUTHORED)
-                frames = remap_share_pan(
-                    frames, seat, unit_to_deg("pan", self.cur["pan"]),
+                # BOTH LEGS OF S7 NOW HOLD ONE BEARING (clips v5, 2026-08-08),
+                # so both take the translation and `remap_share_pan` has no
+                # caller left in the share path. S7a's 89-degree turn to the
+                # participant went for two reasons that turned out to be the
+                # same reason twice: the seat was a template nobody measured,
+                # and the camera is on the head, so the turn took the eye off
+                # the finding for 3.4 s at exactly the moment the storyboard
+                # opens. See generate_s7_found.py's header.
+                frames = shift_pan_centre(
+                    frames, unit_to_deg("pan", self.cur["pan"]),
                     verbose=self.verbose)
             elif nxt in ST.USER_FACING:
                 # Face the person, wherever they actually are. The clip's own pan
@@ -675,24 +699,11 @@ class ClipPlayer:
                 to = (self._user_pan if self._user_pan is not None
                       else ST.USER_PAN_AUTHORED)
                 frames = shift_pan_centre(frames, to, verbose=self.verbose)
-            if (nxt in ("S7a", "S7b") and self._user_pan is None
-                    and not self._warned_no_user_pan):
-                # Said once, because the default is a guess about the ROOM and
-                # only the researcher can confirm it. It is a defensible guess --
-                # S2 and S3 turned to this angle to listen, in front of the
-                # person -- but a guess that is never mentioned becomes a fact
-                # nobody remembers choosing.
-                self._warned_no_user_pan = True
-                print(f"[share] no seat locked -- S7 will beckon to "
-                      f"{ST.USER_PAN_AUTHORED:+.0f} deg, the angle S2/S3 are "
-                      f"authored at. Lock the real one in the web UI (ROBOT tab) "
-                      f"if the participant is not there.")
-                print(f"[share] !! no user pan set -- {nxt} will play at the "
-                      f"authored template {ST.SHARE_TEMPLATE['user']:+.0f} deg. "
-                      f"S2/S3 are authored at -30. If the person is not at "
-                      f"{ST.SHARE_TEMPLATE['user']:+.0f}, the beckon points the "
-                      f"wrong way. Set it in the web UI (ROBOT tab) or call "
-                      f"set_user_pan().")
+            # THE SEAT WARNING IS GONE WITH THE BEAT THAT NEEDED IT. Nothing
+            # in S7 turns to the participant any more, so `set_user_pan` no
+            # longer affects it and warning about an unset seat would point at a
+            # setting that changes nothing. S6 still faces the person and still
+            # uses it -- see ST.USER_FACING.
             first = {j: frames[0][j] for j in JOINTS}
             # A re-aim only applies to the clips it was aimed at; entering anything
             # else clears it, so an old override cannot silently steer a later state.

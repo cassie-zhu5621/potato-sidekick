@@ -180,9 +180,28 @@ def call_json(
                 v = getattr(u, k, None)
                 if isinstance(v, int):
                     LAST_USAGE[k] = v
-            if not LAST_USAGE and isinstance(u, dict):
+            # AND ANYTHING ELSE IT CARRIES, under whatever name it carries it.
+            #
+            # The guarded list above is a guess at the SDK's vocabulary, and on
+            # 2026-08-08 every guess but one missed: 192 recorded calls, all of
+            # them carrying `total_tokens` and NOTHING else. So the split between
+            # input, output and thinking -- the only split that can distinguish a
+            # long answer from a long queue -- was thrown away on every call, and
+            # the question this block exists to answer stayed unanswerable.
+            #
+            # The dict fallback could not help: it was gated on LAST_USAGE being
+            # empty, and `total_tokens` had already filled it. Sweep instead, and
+            # let the field names be whatever this SDK version calls them.
+            if isinstance(u, dict):
                 LAST_USAGE.update({k: v for k, v in u.items()
                                    if isinstance(v, int)})
+            else:
+                for k in dir(u):
+                    if k.startswith("_"):
+                        continue
+                    v = getattr(u, k, None)
+                    if isinstance(v, int) and not isinstance(v, bool):
+                        LAST_USAGE.setdefault(k, v)
     except Exception:
         pass
 

@@ -170,6 +170,46 @@ the window, not the overlay.
 
 ---
 
+## 4b. The participant's screen — a SECOND terminal
+
+The tablet beside the robot shows the reports. It needs a plain file server,
+because `file://` forbids the `fetch` the page uses to notice new reports:
+
+```bash
+cd notice-sidekick-runkit/session_feed
+python3 -m http.server 8765 --bind 0.0.0.0
+```
+
+Leave it running all day. Point the tablet at, once, and never again:
+
+```
+http://localhost:8765/latest.html      # on the laptop itself, or a Sidecar iPad
+http://<laptop-ip>:8765/latest.html    # ipconfig getifaddr en0
+```
+
+`latest.html` follows `current.txt`, which the loop rewrites at startup, so it
+tracks the current run across participants and across restarts without anybody
+retyping a session name.
+
+**A SEPARATE PROCESS ON PURPOSE.** Serving this from the `--serve` web UI would
+be one window fewer and was rejected for it: the two would then die together, and
+the moment that matters is a mid-session restart of the loop. The participant is
+sitting in front of the tablet; it should keep showing the last report rather
+than "cannot connect".
+
+**Do not put this on the participant's phone.** The questionnaire's
+imagined-camera block and interview Q6 both turn on the contrast with *phone
+alerts*; delivering the reports by phone answers that question before it is
+asked. A fixed screen that is not theirs is the point.
+
+If the tablet cannot reach the laptop, suspect the venue's WiFi before anything
+else — campus networks commonly isolate clients from each other, and then no IP
+will work. `curl -sI http://<laptop-ip>:8765/latest.html` FROM THE LAPTOP splits
+it: a 200 means the server and firewall are fine and the block is between the
+devices. Sidecar, or a phone hotspot both machines join, sidesteps it entirely.
+
+---
+
 ## 5. Shut down — every time
 
 ```bash
@@ -188,6 +228,10 @@ hand — a relaxed neck moves freely.
 | symptom | first suspect |
 |---|---|
 | `no CoreS3 found` | another process owns the port (Arduino IDE's serial monitor); then firmware |
+| tablet says "waiting for a session…" forever | the loop has not started, or it is writing to a `--feed-dir` outside `session_feed/`. `cat session_feed/current.txt` |
+| tablet shows the previous participant's reports | the loop never started for this one; `current.txt` is written before anything else can fail, so it is a run that did not run |
+| tablet page never updates | opened as `file://`, not through the server — `fetch` is blocked there and the poll dies silently |
+| `PONG cores3_sidekick v4` after flashing | the board still has the old build; v5 is STOP-as-hold, OK-only on `noticed`, OK on `error` |
 | LED never changes | no `--cores3`; then firmware; then a flat `led` column in the CSV (re-export) |
 | transcript comes back empty | microphone permission for Terminal — macOS hands out a **silent stream** rather than an error |
 | stuck on the `waiting` bar | Whisper is running; `stt_busy` postpones the 15 s deadline up to a 30 s ceiling. Press STOP: if it responds, the main loop is alive |

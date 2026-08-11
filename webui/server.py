@@ -43,6 +43,13 @@ STATE = {"jpg": None, "feed": [], "thumbs": {}, "frames": {},
          "status": [],                                  # [dict per entry: see build_status]
          "judgments": {},                               # label -> candidate/judging/result
          "seen": [], "detect": [], "focus": [],         # relevance layer: enumerate -> tier
+         # THE RESEARCHER'S OVERRIDE. `spec_watch` is the current plan in the
+         # three fields a hand-edit touches; `pending_spec` is what the page
+         # posted back and the loop has not yet applied; `spec_error` is what
+         # validate() said about it. Kept apart from `entries`/`status`, which
+         # are read-only renderings -- an editor that wrote to the same slot
+         # would fight the poll loop.
+         "spec_watch": [], "pending_spec": None, "spec_error": "",
          # Additions for the robot, kept SEPARATE from the plan slots above. An
          # earlier version showed the state machine by writing state rows into
          # `entries`/`status`, which silently replaced THE PLAN -- the one panel
@@ -93,11 +100,39 @@ def build_status(statuses, entries, truth):
             "all": list(e["all"]), "any": list(e["any"]),
             "not": list(e["not"]), "then": list(e["then"]),
             "on": {str(r): bool(truth.get(r, False)) for r in ids},
+            # WHICH OBJECT THE ENTRY IS ABOUT. Note the key is NOT `on` -- that
+            # name was already taken, by the per-relation truth map above, and
+            # the collision is why the binding never reached the page at all:
+            # the spec had it, `_focus_ok` enforced it, and the panel showed a
+            # bare "hands-on" with nothing attached. Reported 2026-08-11 as
+            # "hands_on isn't bound to the whiteboard" about a plan that was
+            # bound to it correctly.
+            "onobj": e.get("on") or "",
         })
     return out
 
 PAGE = """<!doctype html><html><head><meta charset=utf-8><title>attention system</title>
 <style>
+.op.onobj{background:#1c1c19;border:1px solid #3a3a35;color:#cfe33a;
+  font:11px ui-monospace,monospace;padding:3px 8px;border-radius:9px;margin-left:6px}
+.op.onobj.none{color:#8a867d}
+
+.devonly{font:11px ui-monospace,monospace;color:#8a867d;letter-spacing:.08em;
+  text-transform:uppercase;margin-left:8px}
+.erow{display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:9px 0;
+  border-bottom:1px solid #2a2a27}
+.chip{font:11px ui-monospace,monospace;padding:4px 8px;border-radius:11px;
+  border:1px solid #3a3a35;color:#8a867d;cursor:pointer;user-select:none}
+.chip.on{background:#cfe33a;border-color:#cfe33a;color:#141414;font-weight:700}
+.eon{font:12px ui-monospace,monospace;background:#1c1c19;border:1px solid #3a3a35;
+  color:#e8e6e0;border-radius:7px;padding:5px 8px;width:130px}
+.ebtn{font:12px ui-sans-serif;background:transparent;border:1px solid #3a3a35;
+  color:#e8e6e0;border-radius:8px;padding:5px 11px;cursor:pointer}
+.ebtn:hover{border-color:#cfe33a}
+.ebtn.go{background:#cfe33a;border-color:#cfe33a;color:#141414;font-weight:700}
+.ewarn{font:11px ui-monospace,monospace;color:#e0a052}
+.eerr{font:12px ui-monospace,monospace;color:#e06a52;padding:8px 0;white-space:pre-wrap}
+
  /* palette: #262626 black · #A1CC48 light green (main) · #D9E157 yellow-green
     #334020 dark olive · #D95B5B red (satisfied) · #E89D9D light red (cooling)
     · #88E4EA blue (lit trigger operators) */
@@ -230,6 +265,9 @@ PAGE = """<!doctype html><html><head><meta charset=utf-8><title>attention system
     <div class="plan rel" id=rel></div>
     <h3>THE PLAN — what it watches for, lit as it happens</h3>
     <div class=plan id=plan></div>
+    <h3>EDIT — change what it watches, without re-planning
+      <span class=devonly>researcher only</span></h3>
+    <div class=plan id=editor></div>
   </div>
  </div>
 </div>
@@ -288,6 +326,13 @@ function compose(s){
     }
   }
   if(!parts.length) parts.push('<span class=detail>(no relations)</span>');
+  // WHAT IT IS BOUND TO. Without this the panel reads "hands-on" and says nothing
+  // about which object has to be touched -- which is the whole of the entry's
+  // meaning, and the difference between a card that can fire and one the focus
+  // gate will hold back on every frame.
+  if(s.onobj) parts.push(`<span class="op onobj">on ${s.onobj}</span>`);
+  else if((s.all||[]).some(i=>[1,4,7,8,9,11].includes(i)))
+    parts.push(`<span class="op onobj none">any focus object</span>`);
   return `<div class=logic>${parts.join('')}</div>`;
 }
 function allLit(s){ return (s.all||[]).every(id=>!!s.on[String(id)]); }
@@ -311,6 +356,47 @@ function renderRel(p){
     ((p.suppressed||[]).length
       ? `<div class=gate>focus gate held back: ${p.suppressed.join(', ')}</div>` : '');
 }
+
+// ---- EDIT: hand-corrected watch entries, applied without re-planning --------
+// The names are the ribbon's own (perception.overlay.LIVE_ABBR), so the chips and
+// the strip along the bottom of the live view say the same words. Nobody has to
+// hold a mapping from ids to meanings in their head while a participant waits.
+const RELS=[[1,'gaze'],[2,'joint'],[3,'eye'],[4,'point'],[5,'prox'],[6,'F-form'],
+            [7,'appr'],[8,'lean'],[9,'hands'],[10,'group'],[11,'turn']];
+let EDIT=null;                  // null = follow the plan; array = being edited
+function editorRows(){
+  return EDIT.map((row,i)=>{
+    const chips=RELS.map(([id,nm])=>
+      `<span class="chip ${row.ids.includes(id)?'on':''}" onclick="tog(${i},${id})">${nm}</span>`).join('');
+    const many=row.ids.length>1
+      ? `<span class=ewarn>AND — all ${row.ids.length} must hold at once</span>` : '';
+    return `<div class=erow>${chips}
+      <input class=eon value="${(row.on||'').replace(/"/g,'&quot;')}"
+             placeholder="on: object" oninput="setOn(${i},this.value)">
+      <button class=ebtn onclick="del(${i})">remove</button>${many}</div>`;
+  }).join('');
+}
+function renderEditor(p){
+  const el=document.getElementById('editor');
+  if(!EDIT) EDIT=(p.spec_watch||[]).map(r=>({ids:[...r.ids],on:r.on||'',label:r.label||''}));
+  el.innerHTML = editorRows() + footer()
+    + (p.spec_error?`<div class=eerr>${p.spec_error}</div>`:'');
+}
+function footer(){return `<div class=erow><button class=ebtn onclick="add()">+ card</button>
+    <button class="ebtn go" onclick="apply()">apply</button>
+    <button class=ebtn onclick="reset()">revert to plan</button></div>`;}
+function renderEditorNow(){document.getElementById('editor').innerHTML=editorRows()+footer();}
+function tog(i,id){const a=EDIT[i].ids,k=a.indexOf(id);
+  k<0?a.push(id):a.splice(k,1); a.sort((x,y)=>x-y); renderEditorNow();}
+function setOn(i,v){EDIT[i].on=v;}
+function del(i){EDIT.splice(i,1);renderEditorNow();}
+function add(){EDIT.push({ids:[9],on:'',label:'manual'});renderEditorNow();}
+function reset(){EDIT=null;}
+async function apply(){
+  await fetch('/spec',{method:'POST',body:JSON.stringify(EDIT)});
+  EDIT=null;                    // follow the plan again once it is installed
+}
+
 async function poll(){
   try{
     let p=await (await fetch('/plan.json')).json();
@@ -335,6 +421,7 @@ async function poll(){
             ${state}<span class=ecap>${caption(s.label)}</span></div>
           ${compose(s)}${j&&j.note?`<div class=detail>${j.note}</div>`:''}</div>`;
       }).join('');
+    renderEditor(p);
     document.getElementById('aim').innerHTML = renderAim(p);
     document.getElementById('userpan').innerHTML = renderUserPan(p);
     const h=document.getElementById('heard');
@@ -361,7 +448,8 @@ async function poll(){
         <img src="/thumb/${m.thumb}"></a>
       <div><div class=note>${m.note||m.label||''}</div>
       <div class=meta>${m.label||''} · ${m.time} · <a href="/frame/${m.frame||''}"
-        target="_blank" style="color:#00d0d0">full strip ↗</a></div></div>
+        target="_blank" style="color:#00d0d0">full strip ↗</a></div>
+      ${m.request?`<div class=meta style="opacity:.55">for: ${m.request}</div>`:''}</div>
     </div>`).join('') : '<div class=empty>nothing noticed yet</div>';
     let sw=await (await fetch('/sweeps.json')).json();
     document.getElementById('scount').textContent = sw.length;
@@ -490,6 +578,8 @@ class H(BaseHTTPRequestHandler):
                 data = {"context": STATE["context"], "why": STATE["why"],
                         "entries": STATE["entries"], "status": STATE["status"],
                         "judgments": STATE["judgments"],
+                        "spec_watch": STATE["spec_watch"],
+                        "spec_error": STATE["spec_error"],
                         "seen": STATE["seen"], "detect": STATE["detect"],
                         "focus": STATE["focus"], "transcript": STATE["transcript"],
                         "states": STATE["states"],
@@ -502,9 +592,42 @@ class H(BaseHTTPRequestHandler):
                         "pan_reach": _pan_reach()}
             self._send(200, "application/json", json.dumps(data).encode())
         elif p == "/feed.json":
-            with LOCK:
-                data = list(reversed(STATE["feed"]))
-            self._send(200, "application/json", json.dumps(data).encode())
+            # READ THE LOG, NOT THE MEMORY. attention_log.jsonl is the durable
+            # record of this run: append-only, written by the single writer in
+            # session/feed.py at the same moment the jpgs land. Serving it
+            # directly means the page shows what actually happened rather than
+            # what this process still happens to be holding -- so the record
+            # survives a reload, a browser opened late, and a laptop-side
+            # restart mid-session, none of which the participant caused and all
+            # of which used to present as "nothing noticed yet".
+            #
+            # The in-memory list stays as the fallback for a run with --save
+            # off, which writes no log at all.
+            #
+            # Images already resolve from disk when they are not in memory (see
+            # /thumb/ and /frame/ below), so a card served from the log is never
+            # a broken one.
+            data, fn = [], os.path.join(feed_dir(), "attention_log.jsonl")
+            try:
+                with open(fn) as fh:
+                    for line in fh:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            data.append(json.loads(line))
+                        except ValueError:
+                            # A torn final line -- the writer was mid-append.
+                            # Dropping it costs one card for one poll; refusing
+                            # the whole response would blank the feed instead.
+                            continue
+            except OSError:
+                data = []
+            if not data:
+                with LOCK:
+                    data = list(STATE["feed"])
+            self._send(200, "application/json",
+                       json.dumps(list(reversed(data))[:200]).encode())
         elif p == "/sweeps.json":
             base = os.path.join(feed_dir(), "sweeps")
             out = []
@@ -578,6 +701,20 @@ class H(BaseHTTPRequestHandler):
             with LOCK:
                 val = None if raw in ("", "none", "clear") else float(raw)
                 STATE["user_pan"] = STATE["pending_user_pan"] = val
+            self._send(200, "application/json", b'{"ok": true}')
+        elif self.path == "/spec":
+            # HAND-EDITED WATCH ENTRIES, applied without re-planning.
+            #
+            # The escape hatch for the study: when the readback is wrong, the
+            # only remedy used to be re-speaking the brief, which re-sweeps and
+            # calls the VLM (6 s on a good evening, 62 s on a bad one) with the
+            # participant waiting. This installs a corrected spec directly. It
+            # never calls the planner and never moves the head.
+            n = int(self.headers.get("Content-Length", 0))
+            raw = self.rfile.read(n).decode("utf-8", "ignore")
+            with LOCK:
+                STATE["pending_spec"] = raw
+                STATE["spec_error"] = ""
             self._send(200, "application/json", b'{"ok": true}')
         elif self.path == "/context":
             n = int(self.headers.get("Content-Length", 0))

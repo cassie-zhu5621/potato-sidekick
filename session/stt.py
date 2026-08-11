@@ -52,12 +52,52 @@ class Recorder:
         self._frames = []
         self._stream = None
         self.level = 0          # 0-100, for the CoreS3 bar
+        # PEAK SAMPLE OF THE LAST CAPTURE. Kept because "nobody spoke" and "the
+        # input device handed us digital silence" are different failures that
+        # produce the same empty transcript, and therefore the same S8. On
+        # 2026-08-08 the second one ran for half an hour looking like the first:
+        # five-second wavs, correct length and sample rate, every sample zero.
+        # In a session that reads as the participant's fault.
+        self.last_peak = None
         self.available = False
         try:
             import sounddevice  # noqa: F401
             self.available = True
         except Exception as e:
             print(f"[stt] sounddevice unavailable ({e}); manual entry only")
+
+    def probe(self, seconds=0.4):
+        """Name the input device and check it is delivering signal. -> ok.
+
+        Run at startup, because a dead microphone is otherwise invisible until a
+        participant has already spoken into it -- and at that point the session
+        is the thing being spent to discover it.
+        """
+        if not self.available:
+            return False
+        import numpy as np
+        import sounddevice as sd
+        try:
+            name = sd.query_devices(kind="input")["name"]
+        except Exception as e:
+            print(f"[stt] !! no input device at all: {e}")
+            return False
+        try:
+            rec = sd.rec(int(seconds * self.sr), samplerate=self.sr,
+                         channels=1, dtype="int16")
+            sd.wait()
+            peak = int(np.abs(rec).max())
+        except Exception as e:
+            print(f"[stt] !! input '{name}' would not record: {e}")
+            return False
+        if peak == 0:
+            print(f"[stt] !! input '{name}' returned {seconds}s of ZEROS. "
+                  f"Nothing said into it will ever transcribe. Check for a "
+                  f"leftover process holding the device, the selected input, "
+                  f"and the input volume -- BEFORE a participant arrives.")
+            return False
+        print(f"[stt] input '{name}' ok (peak {peak} in {seconds}s of room tone)")
+        return True
 
     def start(self):
         if not self.available:
@@ -85,6 +125,18 @@ class Recorder:
         if not self._frames:
             return None
         audio = np.concatenate(self._frames, axis=0)
+        self.last_peak = int(np.abs(audio).max()) if len(audio) else 0
+        if self.last_peak == 0 and len(audio) > self.sr // 2:
+            # Not a quiet room: a quiet room has noise. Zero across half a
+            # second of int16 means the stream is open and delivering nothing.
+            print(f"[stt] !! DEAD INPUT -- {len(audio) / self.sr:.1f}s captured "
+                  f"and EVERY SAMPLE IS ZERO. The microphone is not the "
+                  f"participant's problem:\n"
+                  f"       - another copy of this loop may still hold the "
+                  f"device (ps aux | grep noticebot_loop)\n"
+                  f"       - the default input may have changed (a headset, the "
+                  f"CoreS3 enumerating as audio)\n"
+                  f"       - input volume may be at 0, or permission revoked")
         need = int(MIN_SECONDS * self.sr)
         if len(audio) < need:
             audio = np.concatenate([audio, np.zeros((need - len(audio), 1),
@@ -138,6 +190,10 @@ class STT:
         self.whisper = Whisper() if enabled else None
         self.last = None            # (text, ok, why, source) for the web UI
         self.busy = False           # a transcription is in flight
+
+    def probe(self):
+        """-> the recorder's startup check. See Recorder.probe."""
+        return self.rec.probe()
 
     def warm(self):
         """Load the model NOW, in the background, before anyone presses anything.
@@ -202,6 +258,11 @@ class STT:
                     except Exception as e:
                         print(f"[stt] transcribe failed: {e}")
                 ok, why = transcript_usable(text, nsp, alp)
+                if not ok and self.rec.last_peak == 0:
+                    # Do not blame the person for a device that recorded
+                    # nothing. The flow still goes to S8 -- there is no request
+                    # either way -- but the log says which failure it was.
+                    why = "DEAD INPUT (every sample zero), not silence"
                 self.last = (text, ok, why, "whisper")
                 print(f"[stt] {text!r}  usable={ok} ({why})  "
                       f"no_speech={nsp:.2f} logprob={alp:.2f}")
