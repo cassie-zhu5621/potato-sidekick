@@ -53,3 +53,6 @@ docs/inspiration.md
 
 # --- local secrets --------------------------------------------------------
 .env
+
+# S1 filming logs -- run output, like session_feed/. Kept on disk, out of the repo.
+film_log_*.json
