@@ -30,7 +30,8 @@ import numpy as np
 
 from perception.overlay import C_RED, C_GREEN
 from perception.gaze import draw_text
-from planning.station_score import rule_name, station_score
+from planning.station_score import (ANCHOR_WEIGHT, rule_name, spec_anchors,
+                                    station_score)
 
 CW, CH = 480, 360          # local researcher-grid cell size (not Gemini input)
 
@@ -139,6 +140,15 @@ class Sweep:
                            max(12, int(cell["y0"] + y0 * CH / fh) - 5)), col, 0.5, 2)
         cv2.imwrite(os.path.join(out, "panorama.jpg"), gridvis)
 
+        # The objects the cards are anchored to. These outrank everything in the
+        # aim, because `person` is a focus label in every plan and a station with
+        # two people in it will otherwise beat the one holding the thing the
+        # person actually asked about. See station_score.station_score.
+        #
+        anchors = spec_anchors(spec)
+        if anchors:
+            print(f"[sweep] aiming for the anchored object(s): {anchors}")
+
         best, shots = (-1, 0.0), []
         for i, (pan, fr) in enumerate(grabbed):
             vis = _draw(fr.copy(), per[i])
@@ -146,10 +156,12 @@ class Sweep:
             raw_fn = f"raw_pan_{int(round(pan)):+04d}.jpg"
             cv2.imwrite(os.path.join(out, raw_fn), fr)
             cv2.imwrite(os.path.join(out, fn), vis)
-            sc = station_score(per[i])
+            sc = station_score(per[i], anchors=anchors)
             if sc > best[0]:
                 best = (sc, pan)
-            print(f"[sweep] pan {pan:+.0f}deg: {len(per[i])} VLM boxes (score {sc})")
+            has = " <- has the anchor" if sc >= ANCHOR_WEIGHT else ""
+            print(f"[sweep] pan {pan:+.0f}deg: {len(per[i])} VLM boxes "
+                  f"(score {sc}){has}")
             shots.append({"pan": int(round(pan)), "file": fn, "raw_file": raw_fn,
                           "dets": [{"label": l, "tier": tr,
                                     "box": [round(v, 1) for v in bx]}

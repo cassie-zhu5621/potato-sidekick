@@ -45,6 +45,19 @@ CONTEXT_POINTS = 1
 CONTEXT_CAP = 1
 
 
+ANCHOR_WEIGHT = 100      # dominates any plausible box count -- see station_score
+
+
+def _labels(boxes: Iterable[Sequence]) -> list[str]:
+    out = []
+    for b in boxes:
+        if isinstance(b, dict):
+            out.append(str(b.get("label", "")).lower())
+        else:
+            out.append(str(b[0]).lower() if len(b) else "")
+    return out
+
+
 def _tiers(boxes: Iterable[Sequence]) -> list[str]:
     """`sweep_plan` holds each box as (label, tier, [x0,y0,x1,y1])."""
     out = []
@@ -78,11 +91,67 @@ def score_capped_context(boxes: Iterable[Sequence]) -> int:
 _RULES = {"gemini": score_gemini, "anthropic": score_capped_context}
 
 
-def station_score(boxes: Iterable[Sequence], provider: str | None = None) -> int:
+def _anchor_hits(boxes: Iterable[Sequence], anchors) -> int:
+    """How many boxes here are the object some card is actually anchored to."""
+    from planning.spec_utils import canonical
+    want = {canonical(a) for a in anchors if str(a).strip()}
+    if not want:
+        return 0
+    n = 0
+    for lab in _labels(boxes):
+        c = canonical(lab)
+        # containment as well as equality: a card anchored to `plant` must be
+        # satisfied by a box the planner called `potted plant`.
+        if c in want or any(w in c or c in w for w in want):
+            n += 1
+    return n
+
+
+def station_score(boxes: Iterable[Sequence], provider: str | None = None,
+                  anchors=()) -> int:
+    """-> how much this station is worth as a place to sit and watch.
+
+    THE ANCHOR OUTRANKS EVERYTHING, and it has to, because `person` is a focus
+    label in every plan and person boxes are the easiest ones a model returns.
+    Recorded 2026-08-08, three sweeps in a row for "tell me if someone touches my
+    plant":
+
+        e2e_214220   view0 [person] 3 · view3 [PLANT] 3 · view4 [person] 3
+                     -> three-way tie, falls through to view order -> view0
+        e2e_213944   view1 [person, person] 6 · view2 [PLANT] 3 · view3 [PLANT] 3
+                     -> two people outscore the plant outright -> view1
+        e2e_211320   view0 [] 1 · view3 [PLANT] 3 · view4 [PLANT] 3   -> correct
+
+    Twice out of three the robot settled on an angle with no plant in it and spent
+    the session there. The brief was about a plant.
+
+    WHY THE ANCHOR AND NOT THE PEOPLE. Every one of these relations needs a person
+    too, so aiming at people is not absurd on its face. But only one of the two
+    moves: a person will walk over to the plant, and the plant will never walk over
+    to the person. Aiming at the fixed half is therefore strictly better -- it is
+    the half that cannot come to you.
+
+    The weight is 100 rather than a tuple so that both provider rules keep working
+    underneath unchanged; no station will ever hold 33 focus boxes. A plan with no
+    `on:` anywhere -- an arrivals card is `gathering(10)` with no object -- passes
+    `anchors=()` and gets exactly the old number.
+
+    Tier is deliberately ignored when counting anchors. The planner has called the
+    same potted plant `focus` in one sweep and `context` in another; that is its
+    opinion about salience, whereas the card naming the object is the person's
+    instruction, and the instruction wins.
+    """
     if provider is None:
         from planning.provider import provider_name
         provider = provider_name()
-    return _RULES.get(provider, score_gemini)(boxes)
+    base = _RULES.get(provider, score_gemini)(boxes)
+    return ANCHOR_WEIGHT * _anchor_hits(boxes, anchors) + base
+
+
+def spec_anchors(spec) -> list:
+    """The objects the plan's cards are anchored to -> what to aim at."""
+    return [e["on"] for e in ((spec or {}).get("watch") or [])
+            if isinstance(e.get("on"), str) and e["on"].strip()]
 
 
 def rule_name(provider: str | None = None) -> str:
