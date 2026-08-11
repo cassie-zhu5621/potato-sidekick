@@ -71,9 +71,28 @@ SWING_FRAMES = [19, 35, 20, 45]   # frames per pass, also measured: the swing
 
 # ---- the held pose ----
 DROOP_TILT = -5.0      # neck sunk. HELD for the whole loop now, not performed.
-DROOP_NOD = -8.0       # head down -- "at a loss". Gaze sits at -13, which is
-                       # clearly distinct from S1_IDLE's sleep pose (gaze -50)
-                       # and from S7's aimed crane (gaze -10 with a deep lean).
+                       # DELIBERATELY SHALLOW, and the 2026-08-08 deepening did
+                       # NOT go here. S7a and S7b hold tilt -22; taking this to
+                       # -20 would put "I have found something" and "I have run
+                       # out of ideas" two degrees apart on the joint that
+                       # carries the strongest signal in the grammar. The body
+                       # would be saying the same thing in the two states that
+                       # most need to be told apart.
+DROOP_NOD = -23.0      # head down -- "at a loss". WAS -8; deepened 15 deg on
+                       # 2026-08-08 because the droop read as too tentative on
+                       # hardware.
+                       #
+                       # The 15 went on NOD rather than TILT for the reason
+                       # above, and it also happens to be the literal gesture:
+                       # this joint IS the head bowing, while tilt is the whole
+                       # creature sinking.
+                       #
+                       # Gaze now sits at -28, which stays clear of both
+                       # neighbours on that axis: S1_IDLE's sleep pose is -50,
+                       # S7's aimed crane is -10 (and reaches it with a deep
+                       # lean, so the postures do not resemble each other even
+                       # where the gaze angles approach). Nod itself is between
+                       # S1's -42 and everything else's >= 0.
                        # NEGATIVE IS DOWN in Blender for nod.
 
 # ---- LED: accented on every swing extreme, decaying with the motion ----

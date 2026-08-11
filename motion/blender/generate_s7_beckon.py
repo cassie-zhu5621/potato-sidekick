@@ -1,73 +1,68 @@
-# Auto-generates the S7b ENSURE loop (3-DOF + LED). Run inside S7b.blend after
+# Auto-generates the S7b INSIST loop (3-DOF + LED). Run inside S7b.blend after
 # repair_rig.py + add_nod_joint.py. OVERWRITES all keys.
 # Design rationale: ../../../robot_motion/S7_DESIGN.md (local, not in this repo).
 #
-# One cycle, starting and ending on the object hold so the loop is seamless:
+# One cycle. Pan never moves: the robot holds the finding and pushes at it.
 #
-#   [hold on OBJECT] --transit--> [USER: beckon toss] --transit--> [arrive, settle]
-#         "there"                        "come"                        "there"
+#   [hold on OBJECT] --push--> --push--> --push--> [hold on OBJECT]
+#        "look"                 there  there  there      "look"
 #
-# Beat 3 of Mundy's initiating-joint-attention triple. S7a carries 1 and 2.
+# v5 (2026-08-08). THE ALTERNATION IS GONE, and this is the one change that
+# matters; everything else is the same authoring method as v4.
 #
-# v4 (2026-08-03). The structure of v3 is kept -- it is right -- and the
-# authoring is brought up to the method the rest of the library now uses:
-# minjerk sampled every frame instead of sparse keys left to Blender's default
-# Bezier, live reach/floor/velocity guards instead of a hand-copied REACH table
-# that was wrong in both directions, and PEAK_FACTOR corrected from 1.5 (which
-# matches no easing curve at all) to minjerk's 1.875.
+# WHY IT WENT. v2-v4 crossed between the participant and the finding, twice per
+# loop, on the strength of Mundy's initiating-joint-attention triple and Huang &
+# Thomaz 2011 phase 3: alternate between partner and referent to confirm the
+# referent was taken up. The argument is sound and the citations are real. What
+# was never true is the PREMISE -- that the robot knows where the partner is.
 #
-# Two shape changes fall out of that:
+# The study lets the participant place the robot anywhere on the desk, at any
+# angle, and nothing measures where they then sit. The user leg was played at an
+# authored USER_PAN unless a seat angle had been locked by hand. So on a freely
+# placed robot the "ensure" beat turned toward an empty corner every 1.6 s, with
+# full confidence, three times a loop. A gesture that requires a fact the system
+# does not have does not degrade gracefully -- it degrades into a robot
+# addressing the furniture.
 #
-#   - AN ARRIVAL SETTLE ON THE OBJECT LEG, mirroring S7a's direct beat: the neck
-#     overshoots the crane slightly and settles, and the head leads the dive.
-#     v3 arrived at the object exactly on the cycle boundary, which left the
-#     re-engagement of the lean with nowhere to resolve.
-#   - LED EDGES. v3's light ramped linearly between waypoints, so it was already
-#     near full brightness halfway through a transit -- the accent smeared across
-#     the travel instead of marking the arrival. It now falls quickly into a
-#     transit, stays dark across it, and rises on arrival.
+# WHAT REPLACED IT is limited to what the robot can actually know. It knows
+# where the FINDING is, because it was looking at it one clip ago. So it stays
+# there and leans at it, repeatedly, and the participant reads the direction off
+# the body -- which is the same channel S5b/S7a already use, and the only one
+# that survives arbitrary placement.
 #
-# WHY THE LOOP ALTERNATES INSTEAD OF STARING (v3, unchanged):
+# THE COST, NAMED. This is no longer joint-attention ENSURE, and the paper must
+# not claim it is. "Have you got it?" (dyadic, requires the partner) has become
+# "it is HERE" (deictic, requires only the referent). Beat 3 of the triple is
+# not performed by the robot at all now; uptake is observed only through the OK
+# button and S7_IGNORED_TIMEOUT_S. What is kept from the literature:
 #
-#   v2 locked pan on the user for the entire loop and tossed the head, forever.
-#   That is beat 1 (attention-get) repeated, not beat 3. The design calls for
-#   ENSURE -- alternate between partner and referent to confirm the referent was
-#   taken up (Mundy; Huang & Thomaz 2011 phase 3; FIND_AND_SHARE.md Sec.3).
+#   - Admoni et al. HRI'13: MULTIPLE SHORT ACCENTS BEAT ONE LONG STARE. The
+#     three-push train is still a train of events rather than a static hold --
+#     that argument never depended on WHERE the second leg pointed, only on
+#     there being repeated onsets. This is the piece of the old rationale that
+#     survives the change intact.
+#   - "Robot gaze does not reflexively cue human attention" (CogSci 2011):
+#     direction can be INFERRED but is not reflexively followed, so a single
+#     quiet aim is not enough. Repetition and amplitude are the compensation.
+#   - Invisible Strings P8, economy of movement: one moving joint, one meaning.
+#     v5 is more economical than v4, not less -- pan is silent for the whole
+#     loop, so the lean is the only thing speaking.
 #
-#   Three reasons the alternation is load-bearing rather than decorative:
+# WHICH STROKE IS FAST decides how a repeated motion reads, and it is unchanged:
+# between the same two poses, a quick stroke OUT with a slow return says "look
+# there"; a quick stroke back with a slow return says "yes". The push is short
+# and sharp, there is a beat at the bottom, the return is more than twice as
+# long and eased. Get this backwards and the insist becomes a nod.
 #
-#   1. Admoni et al. HRI'13: MULTIPLE SHORT GLANCES BEAT ONE LONG STARE for
-#      conveying attention, and it is the TRANSITION INTO fixation -- the
-#      fixation event -- that reads as attending. v2's static lock on the user's
-#      face was exactly the single long stare their data says is the weaker cue.
-#      An alternation is a train of fixation events.
-#   2. "Robot gaze does not reflexively cue human attention" (CogSci 2011):
-#      people can INFER direction from robot gaze but do not reflexively
-#      reallocate attention to the cued location. The follow has to be earned.
-#   3. Naendrup-Poell & Onnasch 2025: participants who DID read the directional
-#      cue still hesitated, waiting for a confirmation the system never gave.
-#      The alternation is that confirmation.
+# THE GAZE STAYS ON THE FINDING while the body pushes: nod compensates the extra
+# lean exactly, so tilt+nod is constant at OBJECT_ELEV. The body moves, the look
+# does not. If nod were held instead, the gaze would dip 12 deg into the floor
+# in front of the object on every beat -- pointing at the wrong thing three
+# times per loop, which is the failure v5 exists to remove.
 #
-#   The beckon toss survives, but only on the USER leg. Restricting it turns the
-#   loop into a two-word sentence -- "come" / "there" -- instead of an
-#   undifferentiated alarm. Invisible Strings P8, economy of movement.
-#
-#   WHICH STROKE IS FAST is what decides how the toss reads: between the same two
-#   positions, a quick stroke up with a slow return says "come here", a quick
-#   stroke down with a slow return says "yes". The eye assigns the meaning to the
-#   accented stroke. Rise is short and sharp, there is a beat of hang at the top,
-#   the return is more than twice as long and eased.
-#
-#   The toss is shared between nod and tilt: the head flicks up while the neck
-#   ROCKS FORWARD under it (v5; it used to straighten up alongside it). That
-#   reads as the whole creature leaning in to call rather than a head hinging,
-#   it keeps nod clear of its ceiling, and because the two are equal and
-#   opposite the gaze stays on the face for the whole stroke.
-#
-# ! STILL OPEN: the two-point runtime remap (S7_DESIGN.md Sec.5) is NOT
-#   implemented, so on hardware this loop alternates between the TEMPLATE angles
-#   regardless of where the person or the finding actually is. See the same note
-#   in generate_s7_found.py.
+# Runtime: remap_share_pan translates the whole clip so OBJECT_PAN lands on
+# wherever S5b actually was. With pan constant this is now a pure offset and
+# cannot distort anything -- another thing the alternation made fragile.
 #
 # Loop-safe: every channel starts and ends on the OBJECT hold, which is also
 # S7a's final pose. Keep OBJECT_* in sync with generate_s7_found.py or the loop
@@ -80,122 +75,104 @@ import bpy
 import math
 
 # ---- keep in sync with generate_s7_found.py ----
-# Both pans are TEMPLATES, meant to be retargeted at runtime -- see the warning
-# above and S7_DESIGN.md Sec.5.
-USER_PAN = 60.0       # SHARED with generate_s2_listen.py -- see the note there.
-                      # Must be identical in s2/s3/s7_beckon/s7_found: it is the
-                      # one direction 'the person' lies in. Reachable since the
-                      # data cable was re-routed (pan now -67.4..+69.7).
-OBJECT_PAN = -25.0    # == the pan S5b was holding when the finding fired
-LEAN_DEG = -22.0      # the epistemic lean -- OBJECT LEG ONLY. A lean into a
-                      # PERSON's space is the social lean, which FORM_DECISION
-                      # rules out. WAS -12 = S5b's watching posture exactly; see
-                      # the long note in generate_s7_found.py. Deepening it also
-                      # widens the two poles of the alternation, which is the
-                      # thing this loop is made of.
-USER_NOD = 0.0        # no lean on the user leg, so no compensation: level = eyes
-OBJECT_ELEV = -10.0
+OBJECT_PAN = -25.0    # == the pan S5b was holding when the finding fired.
+                      # A TEMPLATE: remap_share_pan rewrites it at runtime to
+                      # wherever S5b actually was.
+OBJECT_ELEV = 0.0     # WAS -10, and that number was never measured -- it was
+                      # authored as "a desk is below". The finding fires INSIDE
+                      # S5b's own view, so it sits at S5b's gaze, which is level.
+LEAN_DEG = -12.0      # = S5b's HOLD_TILT, so THE REST POSE OF S7 IS THE WATCHING
+                      # POSE. The camera rides on the head; at -22 every panel
+                      # the storyboard took during S7's rests sat ten degrees --
+                      # a third of the vertical frame -- below its opening
+                      # panel, and the strip cut between them. Reported
+                      # 2026-08-08.
+                      #
+                      # The ten degrees WAS the epistemic escalation, "watching"
+                      # against "found it". It is not dropped, it has moved into
+                      # the PUSH below: a transient toward the finding rather
+                      # than a posture held while the camera is trying to record
+                      # what was found. Admoni HRI'13 already argued that way for
+                      # this loop's train of accents over a single held stare.
+                      #
+                      # THE COST, NAMED: a still photograph of S7 between pushes
+                      # is indistinguishable from S5b watching. The difference
+                      # lives in the motion, the LED (summon) and the sound.
+                      #
+                      # Must equal generate_s7_found's -- S7b opens on S7a's
+                      # last frame -- and both must equal S5b's HOLD_TILT.
 OBJECT_NOD = OBJECT_ELEV - LEAN_DEG   # cancel the lean's pitch, THEN aim
 
-# ---- the toss (USER leg only) ----
-# !! NOT EXPORTED YET (2026-08-05). motion/clips/S7b.csv is still the v4 build:
-#    tilt runs -25..+8, i.e. the OLD backward toss, and the gaze reaches +18 deg
-#    at the top of the summons. Everything from here down describes what this
-#    file WOULD produce, not what the robot currently plays. Deliberate -- the
-#    change is cosmetic and the session was spent verifying behaviour -- but a
-#    generator that disagrees with its own clip is exactly the kind of silent
-#    mismatch this project keeps paying for, so it says so out loud.
-#    Re-run in S7b.blend and export to clear this note.
-THROW_NOD = 14.0      # head flicks UP this far (positive = up in Blender).
-                      # LOCKED to -THROW_TILT by the gaze guard below; the two
-                      # are one gesture and cannot be tuned apart.
-THROW_TILT = -14.0    # v5: the neck now ROCKS FORWARD under the lifting head
-                      # instead of straightening up with it. WAS +8.
-                      #
-                      # WHY, and why this is not the social lean the object leg
-                      # is careful to keep for itself. FORM_DECISION rules out
-                      # leaning into a person's space as a HELD POSTURE. This is
-                      # a stroke: five frames out, eleven back, and the user
-                      # leg's held pose is still tilt 0 / nod 0. A gesture that
-                      # returns is not a posture, and -22 remains the only
-                      # sustained lean in the vocabulary.
-                      #
-                      # The up-toss was the AUTHORED "come here" and it is not
-                      # what the body reads as. Lifting the head while the neck
-                      # also straightens moves the whole creature AWAY from the
-                      # person it is summoning; the accent lands, but it lands
-                      # in retreat. Rocking forward puts the body behind the
-                      # summons.
-                      #
-                      # -10 pairs with THROW_NOD +10 so the gaze angle
-                      # (tilt + nod) is 0 at rest, 0 at the top of the toss, and
-                      # 0 on the way back: THE ROBOT ROCKS TOWARD YOU WITHOUT
-                      # EVER TAKING ITS EYES OFF YOUR FACE. Eye contact is what
-                      # makes a beckon a summons rather than a twitch.
-                      #
-                      # HOW DEEP THIS CAN GO IS SET BY RISE_F, NOT BY TASTE. The
-                      # stroke has to cross it in RISE_F frames under PEAK_DPS:
-                      #
-                      #     max|THROW_TILT| = PEAK_DPS * (RISE_F/FPS) / 1.875
-                      #                     = 21.3 deg per RISE_F frame @30fps
-                      #
-                      #     RISE_F  5 -> 10.7    7 -> 14.9    9 -> 19.2
-                      #
-                      # So a deeper rock is bought with frames, and the frames
-                      # come out of the asymmetry that makes this read as "come
-                      # here" rather than "yes" -- FALL_F has to grow with it to
-                      # hold the ratio near 2.2. v5 takes RISE_F 5 -> 7 and
-                      # FALL_F 11 -> 15: ratio 2.14, 14 deg of rock, and 0.2 s
-                      # added to the cycle.
-                      #
-                      # -18 (RISE_F 9) was the next rung and is rejected twice
-                      # over: a 0.3 s "flick" is no longer a flick, and -18 sits
-                      # close enough to the object leg's -22 that the two poles
-                      # of the alternation stop being two poles. THE CONTRAST IS
-                      # THE GESTURE; a deeper user lean past this point buys
-                      # emphasis by spending the thing being emphasised.
+# ---- the insistence ----
+#
+# v5: THE ALTERNATION IS GONE. S7b used to cross between a template USER_PAN and
+# the object, twice per loop -- Mundy's third beat, alternating between partner
+# and referent to confirm the referent was taken up.
+#
+# It is dropped because it needs a fact this system does not have. The
+# participant places the robot wherever they like, and nothing measures where
+# they then sit; the user leg was played at an authored +60 unless somebody
+# locked a seat angle by hand. A gesture that requires the partner's position
+# will, on a robot placed freely, point confidently at the wrong place -- and
+# pointing confidently at nobody is worse than not pointing at a person at all.
+#
+# What replaces it is honest about what the robot knows: it knows where the
+# FINDING is, because it was just looking at it. So it stays there and pushes
+# toward it, repeatedly. "Have you got it?" becomes "it is HERE, it is HERE".
+#
+# The cost is named rather than hidden: this is no longer joint-attention
+# ENSURE. Nothing in the loop now checks whether the person took the referent
+# up, because nothing in the loop can see them. S7's uptake is measured only by
+# the OK button and by S7_IGNORED_TIMEOUT_S.
+BOB_DEG = 12.0        # how much deeper the neck pushes on each beat, from the
+                      # held lean. -22 -> -34, well inside tilt's -46.9 reach.
+                      # Ceiling is RISE_F: 12/(7/30)*1.875 = 96 deg/s of 120.
+BOB_N = 3             # beats per loop. Three reads as insistence; two reads as
+                      # a twitch, and four starts to nag.
 
 # ---- rhythm: the asymmetry IS the gesture ----
-RISE_F = 7            # sharp. This is the stroke that carries the meaning.
-                      # WAS 5. Raised only to buy depth for THROW_TILT -- see the
-                      # ceiling formula there. It is the shortest beat that
-                      # reaches -14 without passing PEAK_DPS.
-TOP_F = 5             # hang at the top -- the "well? come on" beat
-FALL_F = 15           # slow, eased return. Must be clearly longer than RISE_F.
-                      # WAS 11, with RISE_F 5, for a ratio of 2.2. Grown with
-                      # RISE_F to keep 2.14: the ratio is what says "come here"
-                      # instead of "yes", so it is not free to drift when the
-                      # rise changes.
-HOLD_USER_F = 6       # settle on the face after the toss, before turning back
-HOLD_OBJ_F = 14       # the held fixation. Must be >= S7a's hold-out, or the
-                      # handover reads as the robot losing interest the moment
-                      # the loop starts. Asserted below.
-SETTLE_OBJ_S = 0.20   # the arrival settle, mirroring S7a's direct beat
-TILT_OVERSHOOT = 3.0
-LEAD = 4.0            # how far the head leads its own final aim
-COUNTER = OBJECT_NOD + LEAD   # the head leads while the neck dives, then settles
-                      # DOWN onto the object. WAS the absolute 6.0 -- see the
-                      # note in generate_s7_found.py for why that silently
-                      # inverts when the lean deepens.
-CYCLES = 2            # alternations per loop; any number loops cleanly
+RISE_F = 7            # sharp push toward the thing. The accented stroke.
+TOP_F = 4             # a beat at the bottom -- "there"
+FALL_F = 15           # slow, eased return. Ratio 2.14, the same shape the
+                      # beckon used: a quick stroke out and a slow one back is
+                      # what separates "look" from a nod.
+GAP_F = 8             # between beats, held at the lean
+HOLD_OBJ_F = 14       # the dwell that OPENS the loop. Must be >= S7a's closing
+                      # hold or the handover reads as the robot losing interest
+                      # the moment the loop starts.
+REST_F = 88           # ...and the one that CLOSES it, which is a different job
+                      # and a much longer one.
+                      #
+                      # S7b LOOPS until OK or S7_IGNORED_TIMEOUT_S (30 s), so
+                      # the cycle length is an insistence RATE, not a duration.
+                      # v4 was 8.5 s carrying one accent: 3.5 accents in the 30
+                      # s window. Three pushes inside a 4.1 s cycle would be 22
+                      # -- six times the rate, at a light that flashes with
+                      # every one. The amplitude went down in v5 and the
+                      # frequency would have more than made up for it.
+                      #
+                      # 88 frames makes the cycle 196 f (6.53 s). Because the
+                      # clip loops, this rest runs straight into the next
+                      # opening hold: 3.4 s of stillness between trains, against
+                      # 3.1 s of pushing. Speaking and waiting in about equal
+                      # measure -- and the waiting is not padding, it is the
+                      # beat in which the person is given room to look up. A
+                      # gesture that never stops asking is not asking.
+                      # ~4.6 trains in the 30 s window, 14 pushes.
+CYCLES = 1            # one pass already contains BOB_N beats
 
-# ---- LED: green, same as S7a -- one event, one colour ----
-# Two accents per cycle, and they are the two things the loop is connecting:
-# the top of the toss ("come") and the arrival back on the finding ("there").
-# Dark across both transits so those two read as events rather than as a glow
-# that happens to be brighter sometimes.
-LED_HOLD = 4.0        # 127/255 -- lit on the finding, but not an event.
+# ---- LED: one accent per push ----
+LED_HOLD = 4.0        # 127/255 -- lit on the finding, not an event.
                       # MUST equal S7a's closing value or the handover blinks.
-LED_TRANSIT = 2.0     # dark through a crossing
-LED_CALL = 8.0        # 255 -- the summons, at the top of the toss
-LED_THERE = 8.0       # 255 -- the arrival back on the finding
+LED_THERE = 8.0       # 255 -- at the bottom of each push
 LED_EDGE_S = 0.13
-LED_COLOR = (0.00, 1.00, 0.16, 1.0)
+LED_COLOR = (1.00, 0.75, 0.00, 1.0)   # = SUMMON (45/100/100). Render only; the
+                                      # robot's colour comes from states.py.
 
 # ---- speed ----
-PEAK_DPS = 120.0      # see generate_s7_found.py for why 120 and not 200
-PEAK_FACTOR = 1.875   # minjerk. WAS 1.5, which matches no curve.
-EASE_MODE = "minjerk"  # Flash & Hogan 1985 -- see generate_s2_listen.py
+PEAK_DPS = 120.0
+PEAK_FACTOR = 1.875   # minjerk (Flash & Hogan 1985)
+EASE_MODE = "minjerk"
 FPS = 30
 SAMPLE_F = 1
 
@@ -259,30 +236,37 @@ if HOLD_OBJ_F < S7A_HOLD_OUT_F:
         f"which reads as the robot losing interest in what it just showed you.")
 if FALL_F <= RISE_F:
     raise RuntimeError("FALL_F must be longer than RISE_F, or the accent lands "
-                       "on the way down and this reads as a nod, not a beckon.")
+                       "on the way back and this reads as a nod, not a push.")
+if BOB_DEG <= 0:
+    raise RuntimeError(
+        f"BOB_DEG is {BOB_DEG:+.1f}: the push must go FORWARD, deeper into the "
+        f"lean and toward the finding. A negative value rocks the robot back "
+        f"from the thing it is pointing at.")
 if abs((LEAN_DEG + OBJECT_NOD) - OBJECT_ELEV) > 0.01:
     raise RuntimeError(
-        f"the object leg does not aim at the object: gaze "
+        f"the clip does not aim at the object: gaze "
         f"{LEAN_DEG + OBJECT_NOD:+.1f} vs OBJECT_ELEV {OBJECT_ELEV:+.1f}.")
-if abs(THROW_TILT + THROW_NOD) > 0.01:
+# THE ONE THAT REPLACES v4's toss check. There the pair had to cancel so the
+# gaze stayed on the FACE during the summons; here it has to cancel so the gaze
+# stays on the FINDING during the push. Same arithmetic, opposite subject --
+# which is the whole of what changed in v5.
+_gaze_bot = (LEAN_DEG - BOB_DEG) + (OBJECT_NOD + BOB_DEG)
+if abs(_gaze_bot - OBJECT_ELEV) > 0.01:
     raise RuntimeError(
-        f"the toss does not hold the gaze: tilt+nod at the top is "
-        f"{THROW_TILT + THROW_NOD:+.1f}, not 0. The user leg rests level, so a "
-        f"non-zero peak means the robot looks away from the face at the exact "
-        f"moment it is summoning -- which is the difference between a beckon "
-        f"and a flinch. Set THROW_NOD = -THROW_TILT.")
-if THROW_TILT > 0:
+        f"the push drags the gaze off the finding: at the bottom it looks at "
+        f"{_gaze_bot:+.1f}, not OBJECT_ELEV {OBJECT_ELEV:+.1f}. nod must rise "
+        f"by exactly the BOB_DEG that tilt falls, or the robot points {abs(_gaze_bot - OBJECT_ELEV):.0f} "
+        f"deg past its own finding {BOB_N} times a loop.")
+if BOB_N < 2:
     raise RuntimeError(
-        f"THROW_TILT is {THROW_TILT:+.1f}: the neck rocks BACK on the toss, "
-        f"moving the robot away from the person it is calling. v5 made this "
-        f"forward on purpose -- see the note at the constant.")
-if LEAN_DEG != -22.0:
+        "BOB_N < 2 is a single twitch. Admoni HRI'13 is the reason this loop "
+        "is a train of accents rather than a hold; one accent is neither.")
+if LEAN_DEG != -12.0:
     raise RuntimeError(
         f"LEAN_DEG is {LEAN_DEG:+.1f} here but generate_s7_found.py authors "
-        f"-22.0. S7b opens on S7a's last frame; if these differ the loop jumps "
-        f"the moment it is entered.")
-
-CROSS_DEG = abs(USER_PAN - OBJECT_PAN)
+        f"-12.0. S7b opens on S7a's last frame; if these differ the loop jumps "
+        f"the moment it is entered -- and both must equal S5b's HOLD_TILT, or "
+        f"the storyboard cuts between watching and reporting.")
 
 
 def frames_for(deg, floor=4):
@@ -290,63 +274,39 @@ def frames_for(deg, floor=4):
     return max(floor, int(math.ceil(abs(deg) * PEAK_FACTOR / PEAK_DPS * FPS)))
 
 
-# The transit also has to carry the lean in and out. If the neck move is the
-# slower of the two it -- not pan -- sets the transit length, or the lean would
-# arrive after the head and the two would read as separate events.
-CROSS_F = max(frames_for(CROSS_DEG), frames_for(LEAN_DEG - TILT_OVERSHOOT))
-SETTLE_OBJ_F = int(round(SETTLE_OBJ_S * FPS))
 LED_EDGE_F = int(round(LED_EDGE_S * FPS))
-if CROSS_F <= 2 * LED_EDGE_F:
+if RISE_F <= LED_EDGE_F or FALL_F <= LED_EDGE_F:
     raise RuntimeError(
-        f"the transit ({CROSS_F} f) is too short to go dark in {LED_EDGE_F} f "
-        f"and come back -- the accent would ramp across the travel instead of "
-        f"marking the arrival.")
+        f"a push leg is shorter than the LED edge ({LED_EDGE_F} f), so the "
+        f"light would still be ramping when the neck arrives -- the accent "
+        f"smears across the travel instead of marking the bottom.")
 
-CYCLE_F = (HOLD_OBJ_F + CROSS_F + RISE_F + TOP_F + FALL_F + HOLD_USER_F
-           + CROSS_F + SETTLE_OBJ_F)
+if REST_F <= HOLD_OBJ_F:
+    raise RuntimeError(
+        f"REST_F {REST_F} is not longer than HOLD_OBJ_F {HOLD_OBJ_F}. The "
+        f"closing rest is what turns the loop into an utterance followed by a "
+        f"wait; if it is as short as the handover dwell, the trains run "
+        f"together and the robot reads as vibrating rather than insisting.")
+CYCLE_F = (HOLD_OBJ_F + BOB_N * (RISE_F + TOP_F + FALL_F)
+           + (BOB_N - 1) * GAP_F + REST_F)
 END_F = 1 + CYCLES * CYCLE_F
 
-for _j, _v, _w in (("pan", OBJECT_PAN, "object leg"),
-                   ("pan", USER_PAN, "user leg"),
-                   ("tilt", LEAN_DEG, "crane"),
-                   ("tilt", LEAN_DEG - TILT_OVERSHOOT, "crane overshoot"),
-                   ("tilt", THROW_TILT, "toss, neck"),
+for _j, _v, _w in (("pan", OBJECT_PAN, "held on the finding, all loop"),
+                   ("tilt", LEAN_DEG, "the crane, at rest"),
+                   ("tilt", LEAN_DEG - BOB_DEG, "the bottom of a push"),
                    ("nod", OBJECT_NOD, "aimed at the finding"),
-                   ("nod", COUNTER, "head leads"),
-                   ("nod", USER_NOD + THROW_NOD, "toss, head")):
+                   ("nod", OBJECT_NOD + BOB_DEG, "counter-rotated at the bottom")):
     reach.check(_j, _v, _w)
-# NOTE ON THE FLOOR CHECK, because one excursion here looks like a violation and
-# is not. On the transit the nod moves only OBJECT_NOD -> 0, i.e. 2.0 deg, under
-# the 3.52 deg nod floor. But that 2 deg is not a movement in its own right: it
-# is one component of levelling the gaze as the lean releases, and the gaze
-# itself travels 10 deg. THE FLOOR APPLIES TO A JOINT'S EXCURSION WHEN THAT
-# EXCURSION IS THE WHOLE MOVE; when a joint is one term of a coordinated pose
-# change, check the pose change. So the gaze is checked, not the nod.
-for _j, _d, _w in (("pan", CROSS_DEG, "the crossing"),
-                   ("tilt", abs(LEAN_DEG), "lean releases for the user"),
-                   ("tilt", THROW_TILT, "toss, neck"),
-                   ("nod", THROW_NOD, "toss, head -- the accent"),
-                   ("nod", COUNTER - OBJECT_NOD, "settle onto the object"),
-                   ("tilt", TILT_OVERSHOOT, "crane settle")):
+for _j, _d, _w in (("tilt", BOB_DEG, "the push, neck"),
+                   ("nod", BOB_DEG, "the push, head -- the counter-rotation")):
     reach.check_floor(_j, _d, _w)
-reach.check_floor("tilt", abs(OBJECT_ELEV), "gaze levels on the transit")
 
 _FAC = math.pi / 2.0 if EASE_MODE == "cosine" else 1.875
-for _w, _deg, _f in (("the crossing", CROSS_DEG, CROSS_F),
-                     ("lean release", LEAN_DEG, CROSS_F),
-                     ("toss, head", THROW_NOD, RISE_F),
-                     ("toss, neck", THROW_TILT, RISE_F),
-                     ("head down onto the object", COUNTER - OBJECT_NOD,
-                      SETTLE_OBJ_F)):
+for _w, _deg, _f in (("the push, neck", BOB_DEG, RISE_F),
+                     ("the push, head", BOB_DEG, RISE_F),
+                     ("the return, neck", BOB_DEG, FALL_F),
+                     ("the return, head", BOB_DEG, FALL_F)):
     _pk = abs(_deg) / (_f / float(FPS)) * _FAC
-    # WAS 200, which left a hole exactly where this file needs a guard.
-    # `frames_for()` SIZES a move so its peak stays under PEAK_DPS (120), but the
-    # rhythm constants -- RISE_F, TOP_F, FALL_F, SETTLE_OBJ_S -- are hand-set and
-    # never went through it. So a hand-set beat was only ever checked against
-    # 200, and anything between 120 and 200 passed while quietly breaking the
-    # policy the computed moves obey. THROW_TILT = -12 is 135 and is precisely
-    # that case. Every current value is at or under 119.5, so this costs nothing
-    # today and catches the next edit.
     if _pk > PEAK_DPS:
         raise RuntimeError(
             f"{_w} peaks at {_pk:.0f} deg/s, over PEAK_DPS {PEAK_DPS:.0f}. "
@@ -420,43 +380,35 @@ def track(points, f):
 
 PAN, TILT, NOD, LED = [], [], [], []
 for i in range(CYCLES):
-    f0 = 1 + i * CYCLE_F                 # on the finding, settled
-    f_hold = f0 + HOLD_OBJ_F             # the crossing to you starts
-    f_user = f_hold + CROSS_F            # arrives on your face, level
-    f_up = f_user + RISE_F               # the accent: "come"
-    f_hang = f_up + TOP_F                # hold the question open
-    f_down = f_hang + FALL_F             # eased, unhurried return
-    f_user_end = f_down + HOLD_USER_F    # settle on the face, then turn back
-    f_obj = f_user_end + CROSS_F         # arrives back on the finding: "there"
-    f_next = f_obj + SETTLE_OBJ_F        # craned and aimed = next cycle's f0
+    f = 1 + i * CYCLE_F
+    PAN += [(f, OBJECT_PAN)]                      # said once; never moves again
+    TILT += [(f, LEAN_DEG)]
+    NOD += [(f, OBJECT_NOD)]
+    LED += [(f, LED_HOLD)]
 
-    PAN += [(f0, OBJECT_PAN), (f_hold, OBJECT_PAN),
-            (f_user, USER_PAN), (f_up, USER_PAN), (f_hang, USER_PAN),
-            (f_down, USER_PAN), (f_user_end, USER_PAN),
-            (f_obj, OBJECT_PAN), (f_next, OBJECT_PAN)]
+    f_start = f + HOLD_OBJ_F                      # the opening dwell ends
+    TILT += [(f_start, LEAN_DEG)]
+    NOD += [(f_start, OBJECT_NOD)]
+    LED += [(f_start, LED_HOLD)]
 
-    TILT += [(f0, LEAN_DEG), (f_hold, LEAN_DEG),
-             (f_user, 0.0),                        # the lean belongs to the
-                                                   # object, never to a person
-             (f_up, THROW_TILT), (f_hang, THROW_TILT),
-             (f_down, 0.0), (f_user_end, 0.0),
-             (f_obj, LEAN_DEG - TILT_OVERSHOOT),   # overshoot, then settle
-             (f_next, LEAN_DEG)]
+    for k in range(BOB_N):
+        f_bot = f_start + RISE_F                  # deepest, aimed at the thing
+        f_up = f_bot + TOP_F                      # the beat: "there"
+        f_back = f_up + FALL_F                    # eased home
+        f_start = f_back + (GAP_F if k < BOB_N - 1 else 0)
 
-    NOD += [(f0, OBJECT_NOD), (f_hold, OBJECT_NOD),
-            (f_user, USER_NOD),                    # level = eyes
-            (f_up, USER_NOD + THROW_NOD), (f_hang, USER_NOD + THROW_NOD),
-            (f_down, USER_NOD), (f_user_end, USER_NOD),
-            (f_obj, COUNTER),                      # head leads the dive
-            (f_next, OBJECT_NOD)]                  # then aims
-
-    LED += [(f0, LED_HOLD), (f_hold, LED_HOLD),
-            (f_hold + LED_EDGE_F, LED_TRANSIT),
-            (f_user - LED_EDGE_F, LED_TRANSIT), (f_user, LED_TRANSIT),
-            (f_up, LED_CALL), (f_hang, LED_CALL),  # lit through the hang
-            (f_down, LED_TRANSIT), (f_user_end, LED_TRANSIT),
-            (f_obj - LED_EDGE_F, LED_TRANSIT), (f_obj, LED_THERE),
-            (f_next, LED_HOLD)]                    # eases back while it dwells
+        TILT += [(f_bot, LEAN_DEG - BOB_DEG), (f_up, LEAN_DEG - BOB_DEG),
+                 (f_back, LEAN_DEG), (f_start, LEAN_DEG)]
+        # Equal and opposite, so tilt+nod stays at OBJECT_ELEV for the whole
+        # push. The creature leans; the look does not leave the finding.
+        NOD += [(f_bot, OBJECT_NOD + BOB_DEG), (f_up, OBJECT_NOD + BOB_DEG),
+                (f_back, OBJECT_NOD), (f_start, OBJECT_NOD)]
+        # Dark on the way in, full at the bottom, out again on the return: the
+        # light marks the ARRIVAL, not the travel. Same edge treatment v4 used
+        # on its transits, for the same reason.
+        LED += [(f_bot - LED_EDGE_F, LED_HOLD), (f_bot, LED_THERE),
+                (f_up, LED_THERE), (f_up + LED_EDGE_F, LED_HOLD),
+                (f_back, LED_HOLD), (f_start, LED_HOLD)]
 
 for f in range(1, END_F + 1, SAMPLE_F):
     key(pan, "z", f, track(PAN, f))
@@ -473,22 +425,23 @@ if (END_F - 1) % SAMPLE_F:
 bpy.context.scene.frame_start = 1
 bpy.context.scene.frame_end = END_F
 
-_pk_cross = CROSS_DEG / (CROSS_F / float(FPS)) * _FAC
-_pk_toss = THROW_NOD / (RISE_F / float(FPS)) * _FAC
-msg = (f"S7b ensure v4: hold OBJECT {OBJECT_PAN:+.0f} ({HOLD_OBJ_F}f) <-> USER "
-       f"{USER_PAN:+.0f} toss +{THROW_NOD:.0f} -> arrive + settle; "
-       f"{CYCLES}x{CYCLE_F}f = {END_F}f ({END_F / FPS:.2f}s), "
-       f"peaks {_pk_cross:.0f}/{_pk_toss:.0f} deg/s")
+_pk = BOB_DEG / (RISE_F / float(FPS)) * _FAC
+msg = (f"S7b insist v5: pan HELD at {OBJECT_PAN:+.0f}; {BOB_N} pushes of "
+       f"{BOB_DEG:.0f} deg into the lean ({LEAN_DEG:+.0f} -> "
+       f"{LEAN_DEG - BOB_DEG:+.0f}), gaze locked at {OBJECT_ELEV:+.0f}; "
+       f"{CYCLES}x{CYCLE_F}f = {END_F}f ({END_F / FPS:.2f}s), peak {_pk:.0f} deg/s; "
+       f"{30.0 / (CYCLE_F / FPS) * BOB_N:.0f} pushes in the 30 s ignore window")
 print(msg)
 
 
 def draw(self, context):
     self.layout.label(text=msg)
-    self.layout.label(text=f"OPENS+CLOSES on OBJECT: pan {OBJECT_PAN:.0f} / "
+    self.layout.label(text=f"PAN NEVER MOVES. Opens+closes on pan {OBJECT_PAN:.0f} / "
                            f"tilt {LEAN_DEG:.0f} / nod {OBJECT_NOD:.0f}")
     self.layout.label(text="= S7a's last frame. Keep both files in sync.")
-    self.layout.label(text="! runtime two-point remap still NOT implemented")
+    self.layout.label(text="v5: no user leg -- placement is arbitrary, so the")
+    self.layout.label(text="robot only points at what it can actually locate.")
     self.layout.label(text="Then: save, run export_clip.py")
 
 
-bpy.context.window_manager.popup_menu(draw, title="S7b ensure v4", icon='INFO')
+bpy.context.window_manager.popup_menu(draw, title="S7b insist v5", icon='INFO')
