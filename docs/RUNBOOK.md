@@ -100,6 +100,46 @@ Wants `GO`. Notes:
 
 ---
 
+## 2b. Is the VLM fast today? — 40 seconds, before the participant arrives
+
+```bash
+python3 -m robot.tools.net_check          # 5 reps; pass a number for more
+```
+
+Planning latency is **not stable across days and is not ours to control**. On
+2026-08-17 the planner's median went from 5.7 s (the previous week) to 18.6 s,
+peaking at 49 s, with nothing changed on our side — same model, same thinking
+level, same ~5460 input tokens. Knowing that at 09:00 is a schedule decision;
+finding out at 14:05 with somebody in the chair is a lost session.
+
+Three numbers, because they fail for different reasons:
+
+| | what it measures | reading |
+|---|---|---|
+| **RTT** | TCP+TLS to the endpoint. No API key, no quota | `> 1 s` → the network. Try a hotspot |
+| **FLOOR** | a call with a ~100-byte payload and an 11-token answer | `> 4 s` → **Google is queueing.** Nothing on this machine helps |
+| **LOADED** | the same call carrying five real JPEGs, ~530 KB | `LOADED − FLOOR` big → the uplink or image ingestion |
+
+It prints a verdict. **A slow FLOOR is the common case and it is not fixable** —
+bandwidth cannot explain seconds for a hundred bytes. Measured 2026-08-17: Wi-Fi
+RTT 0.03 s with FLOOR 7.7 s, and a hotspot made RTT *worse* (0.11 s) without
+touching FLOOR. Do not go looking for a better connection.
+
+**What to do when FLOOR is slow**
+
+- Budget ~20 s for brief→watch and **push E1's cue later**, so the actor is not
+  playing the scene while the robot is still sweeping.
+- Do **not** change `NOTICEBOT_GEMINI_MODEL` mid-study, however tempting. Half of
+  S2 is already on `gemini-3.5-flash`; a model change splits the dataset and
+  makes the planner's relation choices incomparable across participants. (3.5 is
+  two generations behind as of 2026-08-13 — 3.6 shipped 07-21, 3.7 on 08-13 —
+  which is the most likely reason it is being served slowly. It is still not
+  worth the confound.)
+- Check <https://status.cloud.google.com/> — but the 08-17 slowdown was never
+  posted there, so an all-green status page is not evidence.
+
+---
+
 ## 3. Motion only — no perception, no cloud
 
 ```bash
@@ -176,9 +216,15 @@ The tablet beside the robot shows the reports. It needs a plain file server,
 because `file://` forbids the `fetch` the page uses to notice new reports:
 
 ```bash
-cd notice-sidekick-runkit/session_feed
+cd ~/Documents/Claude/Projects/potatobot/notice-sidekick-runkit/session_feed && \
 python3 -m http.server 8765 --bind 0.0.0.0
 ```
+
+**The full path and the `&&` both matter.** This was two lines with a relative
+`cd`, and run from anywhere but the project's parent the `cd` fails while the
+shell goes on to the next line anyway — so the server comes up happily, serving
+whatever directory you happened to be in. It looks like it worked; the tablet
+just says 404 for `latest.html`. Hit on 2026-08-17 from the home directory.
 
 Leave it running all day. Point the tablet at, once, and never again:
 
@@ -231,6 +277,8 @@ hand — a relaxed neck moves freely.
 | tablet says "waiting for a session…" forever | the loop has not started, or it is writing to a `--feed-dir` outside `session_feed/`. `cat session_feed/current.txt` |
 | tablet shows the previous participant's reports | the loop never started for this one; `current.txt` is written before anything else can fail, so it is a run that did not run |
 | tablet page never updates | opened as `file://`, not through the server — `fetch` is blocked there and the poll dies silently |
+| planning takes 20–50 s and the participant is waiting | almost never ours. `python3 -m robot.tools.net_check` (§2b). A slow FLOOR is Google queueing and cannot be fixed from here |
+| `404` for `latest.html` on a server that started fine | the `cd` failed and the shell ran `http.server` anyway, so it is serving the wrong directory. The 404 line is the give-away: the server is up, the file is not there. Use the full path with `&&` (§4b) |
 | `PONG cores3_sidekick v4` after flashing | the board still has the old build; v5 is STOP-as-hold, OK-only on `noticed`, OK on `error` |
 | LED never changes | no `--cores3`; then firmware; then a flat `led` column in the CSV (re-export) |
 | transcript comes back empty | microphone permission for Terminal — macOS hands out a **silent stream** rather than an error |
