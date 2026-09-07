@@ -121,7 +121,7 @@ def test_a_one_panel_story_asks_the_model_nothing():
     from session import storyboard as SB
     src = inspect.getsource(SB.Storyboard._finalize)
     i = src.index("if n <= 1:")
-    assert "note = self.describe or note" in src[i:i + 120]
+    assert "note = describe or note" in src[i:i + 120]
     assert "run_judge" not in src[i:src.index("elif", i)]
 
 
@@ -132,7 +132,7 @@ def test_a_longer_story_sends_the_panels_not_the_strip():
     i = src.index("elif not self.offline:")
     branch = src[i:i + 500]
     assert 'for f in b["shots"]' in branch, "the composited strip is being sent again"
-    assert "opening=self.describe" in branch, "the arc does not continue the trigger"
+    assert "opening=describe" in branch, "the arc does not continue the trigger"
 
 
 def test_the_strip_is_still_built_and_saved():

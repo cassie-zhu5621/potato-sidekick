@@ -43,13 +43,16 @@ STATE = {"jpg": None, "feed": [], "thumbs": {}, "frames": {},
          "status": [],                                  # [dict per entry: see build_status]
          "judgments": {},                               # label -> candidate/judging/result
          "seen": [], "detect": [], "focus": [],         # relevance layer: enumerate -> tier
-         # THE RESEARCHER'S OVERRIDE. `spec_watch` is the current plan in the
-         # three fields a hand-edit touches; `pending_spec` is what the page
-         # posted back and the loop has not yet applied; `spec_error` is what
-         # validate() said about it. Kept apart from `entries`/`status`, which
-         # are read-only renderings -- an editor that wrote to the same slot
-         # would fight the poll loop.
-         "spec_watch": [], "pending_spec": None, "spec_error": "",
+         # THE RESEARCHER'S TWO EMERGENCY CONTROLS, both one-shot flags the loop
+         # drains and clears. They replaced a panel for hand-editing the watch
+         # entries (removed 2026-08-12): correcting the SPEC mid-session asks the
+         # researcher to think in relation ids while an actor is mid-scene and a
+         # participant is watching. These ask instead for the two things that are
+         # actually wanted at that moment -- notice this now, and go look again.
+         "pending_finding": False, "pending_resweep": False,
+         # What the participant called it. Typed here, sent to the board as
+         # EVT NAME, and drawn on `idle` for the rest of the session.
+         "bot_name": "", "pending_name": None,
          # Additions for the robot, kept SEPARATE from the plan slots above. An
          # earlier version showed the state machine by writing state rows into
          # `entries`/`status`, which silently replaced THE PLAN -- the one panel
@@ -113,6 +116,10 @@ def build_status(statuses, entries, truth):
 
 PAGE = """<!doctype html><html><head><meta charset=utf-8><title>attention system</title>
 <style>
+.namerow{display:flex;gap:8px;margin-top:8px}
+#nm{flex:1;font:13px ui-monospace,monospace;background:#1c1c19;color:#e8e6e0;
+  border:1px solid #3a3a35;border-radius:8px;padding:7px 10px}
+
 .op.onobj{background:#1c1c19;border:1px solid #3a3a35;color:#cfe33a;
   font:11px ui-monospace,monospace;padding:3px 8px;border-radius:9px;margin-left:6px}
 .op.onobj.none{color:#8a867d}
@@ -130,8 +137,7 @@ PAGE = """<!doctype html><html><head><meta charset=utf-8><title>attention system
   color:#e8e6e0;border-radius:8px;padding:5px 11px;cursor:pointer}
 .ebtn:hover{border-color:#cfe33a}
 .ebtn.go{background:#cfe33a;border-color:#cfe33a;color:#141414;font-weight:700}
-.ewarn{font:11px ui-monospace,monospace;color:#e0a052}
-.eerr{font:12px ui-monospace,monospace;color:#e06a52;padding:8px 0;white-space:pre-wrap}
+.ebtn.force{background:#e0a052;border-color:#e0a052;color:#141414;font-weight:700}
 
  /* palette: #262626 black · #A1CC48 light green (main) · #D9E157 yellow-green
     #334020 dark olive · #D95B5B red (satisfied) · #E89D9D light red (cooling)
@@ -259,15 +265,22 @@ PAGE = """<!doctype html><html><head><meta charset=utf-8><title>attention system
     <h3>DESCRIBE THE SCENE — it will re-plan</h3>
     <input id=c placeholder='e.g. "two of us are assembling a robot arm this afternoon"'>
     <div class=heard id=heard></div>
+    <div class=namerow>
+      <input id=nm placeholder="the name they gave it (ASCII, <=16)">
+      <button class="ebtn go" onclick="setName()">name it &amp; say hello</button>
+    </div>
+    <h3>IF IT MISSES THE SCENE <span class=devonly>researcher only</span></h3>
+    <div class=namerow>
+      <button class="ebtn force" onclick="force()">notice this NOW</button>
+      <button class=ebtn onclick="resweep()">look around again</button>
+    </div>
+    <div class=heard id=emerg></div>
   </div>
   <div class=right>
     <h3>SCENE → PLAN — what the VLM saw &amp; how it tiered it</h3>
     <div class="plan rel" id=rel></div>
     <h3>THE PLAN — what it watches for, lit as it happens</h3>
     <div class=plan id=plan></div>
-    <h3>EDIT — change what it watches, without re-planning
-      <span class=devonly>researcher only</span></h3>
-    <div class=plan id=editor></div>
   </div>
  </div>
 </div>
@@ -357,46 +370,28 @@ function renderRel(p){
       ? `<div class=gate>focus gate held back: ${p.suppressed.join(', ')}</div>` : '');
 }
 
-// ---- EDIT: hand-corrected watch entries, applied without re-planning --------
-// The names are the ribbon's own (perception.overlay.LIVE_ABBR), so the chips and
-// the strip along the bottom of the live view say the same words. Nobody has to
-// hold a mapping from ids to meanings in their head while a participant waits.
-const RELS=[[1,'gaze'],[2,'joint'],[3,'eye'],[4,'point'],[5,'prox'],[6,'F-form'],
-            [7,'appr'],[8,'lean'],[9,'hands'],[10,'group'],[11,'turn']];
-let EDIT=null;                  // null = follow the plan; array = being edited
-function editorRows(){
-  return EDIT.map((row,i)=>{
-    const chips=RELS.map(([id,nm])=>
-      `<span class="chip ${row.ids.includes(id)?'on':''}" onclick="tog(${i},${id})">${nm}</span>`).join('');
-    const many=row.ids.length>1
-      ? `<span class=ewarn>AND — all ${row.ids.length} must hold at once</span>` : '';
-    return `<div class=erow>${chips}
-      <input class=eon value="${(row.on||'').replace(/"/g,'&quot;')}"
-             placeholder="on: object" oninput="setOn(${i},this.value)">
-      <button class=ebtn onclick="del(${i})">remove</button>${many}</div>`;
-  }).join('');
+// ---- THE TWO EMERGENCY CONTROLS --------------------------------------------
+// A session is one shot. When the actor plays the scene and the CV does not
+// fire, the choice is between a void session and a researcher taking over, and
+// the second is worth having. `force` skips the trigger AND the confirmation
+// judge and goes straight to the performance and the story; `resweep` is the
+// nine-minute self-directed sweep, on demand.
+async function say(m){const el=document.getElementById('emerg');
+  el.textContent=m; setTimeout(()=>{el.textContent='';},4000);}
+async function force(){
+  await fetch('/finding',{method:'POST'});
+  say('forced -- it will notice, then collect the story');
 }
-function renderEditor(p){
-  const el=document.getElementById('editor');
-  if(!EDIT) EDIT=(p.spec_watch||[]).map(r=>({ids:[...r.ids],on:r.on||'',label:r.label||''}));
-  el.innerHTML = editorRows() + footer()
-    + (p.spec_error?`<div class=eerr>${p.spec_error}</div>`:'');
-}
-function footer(){return `<div class=erow><button class=ebtn onclick="add()">+ card</button>
-    <button class="ebtn go" onclick="apply()">apply</button>
-    <button class=ebtn onclick="reset()">revert to plan</button></div>`;}
-function renderEditorNow(){document.getElementById('editor').innerHTML=editorRows()+footer();}
-function tog(i,id){const a=EDIT[i].ids,k=a.indexOf(id);
-  k<0?a.push(id):a.splice(k,1); a.sort((x,y)=>x-y); renderEditorNow();}
-function setOn(i,v){EDIT[i].on=v;}
-function del(i){EDIT.splice(i,1);renderEditorNow();}
-function add(){EDIT.push({ids:[9],on:'',label:'manual'});renderEditorNow();}
-function reset(){EDIT=null;}
-async function apply(){
-  await fetch('/spec',{method:'POST',body:JSON.stringify(EDIT)});
-  EDIT=null;                    // follow the plan again once it is installed
+async function resweep(){
+  await fetch('/resweep',{method:'POST'});
+  say('re-sweeping on the request already on record');
 }
 
+async function setName(){
+  const v=document.getElementById('nm').value.trim();
+  if(!v) return;
+  await fetch('/name',{method:'POST',body:v});
+}
 async function poll(){
   try{
     let p=await (await fetch('/plan.json')).json();
@@ -414,14 +409,15 @@ async function poll(){
                      :s.cool&&j&&j.status==='confirmed'?`<span class="estate confirmed">confirmed · cooldown ${left}s</span>`
                      :s.cool&&j&&j.status==='rejected'?`<span class="estate rejected">rejected · cooldown ${left}s</span>`
                      :s.cool?`<span class="estate cool">cooldown ${left}s</span>`
-                     :s.sat?'<span class="estate sat">held · release to rearm</span>'
+                     :s.sat?'<span class="estate sat">held</span>'
                      :'<span class=estate>watching</span>';
         return `<div class=entry>
           <div class=ehead><span class="dot ${s.sat?'sat':(s.cool?'cool':'')}"></span>
             ${state}<span class=ecap>${caption(s.label)}</span></div>
           ${compose(s)}${j&&j.note?`<div class=detail>${j.note}</div>`:''}</div>`;
       }).join('');
-    renderEditor(p);
+    const nm=document.getElementById('nm');
+    if(document.activeElement!==nm && p.bot_name!==undefined && !nm.value) nm.value=p.bot_name;
     document.getElementById('aim').innerHTML = renderAim(p);
     document.getElementById('userpan').innerHTML = renderUserPan(p);
     const h=document.getElementById('heard');
@@ -578,8 +574,7 @@ class H(BaseHTTPRequestHandler):
                 data = {"context": STATE["context"], "why": STATE["why"],
                         "entries": STATE["entries"], "status": STATE["status"],
                         "judgments": STATE["judgments"],
-                        "spec_watch": STATE["spec_watch"],
-                        "spec_error": STATE["spec_error"],
+                        "bot_name": STATE["bot_name"],
                         "seen": STATE["seen"], "detect": STATE["detect"],
                         "focus": STATE["focus"], "transcript": STATE["transcript"],
                         "states": STATE["states"],
@@ -702,19 +697,21 @@ class H(BaseHTTPRequestHandler):
                 val = None if raw in ("", "none", "clear") else float(raw)
                 STATE["user_pan"] = STATE["pending_user_pan"] = val
             self._send(200, "application/json", b'{"ok": true}')
-        elif self.path == "/spec":
-            # HAND-EDITED WATCH ENTRIES, applied without re-planning.
-            #
-            # The escape hatch for the study: when the readback is wrong, the
-            # only remedy used to be re-speaking the brief, which re-sweeps and
-            # calls the VLM (6 s on a good evening, 62 s on a bad one) with the
-            # participant waiting. This installs a corrected spec directly. It
-            # never calls the planner and never moves the head.
+        elif self.path == "/name":
             n = int(self.headers.get("Content-Length", 0))
-            raw = self.rfile.read(n).decode("utf-8", "ignore")
+            val = self.rfile.read(n).decode("utf-8", "ignore").strip()[:16]
             with LOCK:
-                STATE["pending_spec"] = raw
-                STATE["spec_error"] = ""
+                STATE["bot_name"] = val
+                STATE["pending_name"] = val      # the loop sends it and greets
+            self._send(200, "application/json", b'{"ok": true}')
+        elif self.path in ("/finding", "/resweep"):
+            # ONE-SHOT FLAGS, not values: the loop reads and clears them on its
+            # next pass. A second click before the drain is the same click, which
+            # is the right behaviour for a button somebody presses twice because
+            # the room did not visibly react within a frame.
+            with LOCK:
+                STATE["pending_finding" if self.path == "/finding"
+                      else "pending_resweep"] = True
             self._send(200, "application/json", b'{"ok": true}')
         elif self.path == "/context":
             n = int(self.headers.get("Content-Length", 0))

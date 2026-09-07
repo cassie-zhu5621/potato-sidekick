@@ -51,7 +51,7 @@ from planning.event_frames import select_temporal_frames
 from perception.watch_exec import order_coincident_candidates
 # Module level: the loop names the provider in five places, all inside
 # functions. A nested import satisfies neither them nor pyflakes.
-from planning.provider import provider_name
+from planning.provider import _ensure_env, provider_name
 
 # The five S4 stations, as keyboard stand-ins for the web UI's pan buttons. Used
 # in S6 to re-aim: the tap said "wrong direction", not "wrong task", so only the
@@ -364,6 +364,10 @@ def main():
                     help="frames a relation must hold before it counts")
     ap.add_argument("--cooldown", type=float, default=15.0,
                     help="seconds before the same entry can fire again")
+    ap.add_argument("--name", default="",
+                    help="what the participant called it (ASCII, <=16). Normally "
+                         "typed in the web UI when they choose it; this is for a "
+                         "restart mid-session, so a board reset does not lose it.")
     ap.add_argument("--tau-gap", type=float, default=3.0,
                     help="THEN-gate: max seconds between ordered relations")
     # ---- storyboard (same defaults as attention_system.py) ----
@@ -409,6 +413,16 @@ def main():
     audit_dir = os.path.join(a.feed_dir, "llm")
     os.makedirs(audit_dir, exist_ok=True)
     audit_lock = threading.Lock()
+    # READ .env BEFORE RECORDING WHAT WAS SENT.
+    #
+    # `_ensure_env` is lazy -- it runs on the first provider_name() -- and the
+    # block below reads os.environ directly, so run.json was written from the
+    # DEFAULTS while the calls themselves, made later, used .env. Found
+    # 2026-08-17: .env said service_tier=standard and media_resolution=medium,
+    # run.json for the same session said priority and None. The audit record was
+    # describing a request nobody made, which is precisely what the comment
+    # below was written to stop it doing.
+    _ensure_env()
     with open(os.path.join(a.feed_dir, "run.json"), "w") as fh:
         json.dump({
             "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
@@ -639,8 +653,40 @@ def main():
             if val == "S5B_TRACK" and ctxd.get("aimed_pan") is not None:
                 player.arm_pan_deg(float(ctxd["aimed_pan"]))
             player.request(val)
+        elif kind == "ack_then":
+            # Arm the landing before the clip is requested. S3_ACK's `then` is
+            # S4_PLAN, so a bare request walks into a sweep -- and both users of
+            # this nod (the greeting, and OK) want it to land somewhere else.
+            #
+            # AND ARM THE BEARING WITH IT. The landing is reached by the PLAYER's
+            # own `then`, which never passes through the ("state", ...) branch
+            # above -- so the pan restore that lives there is skipped, and S5B
+            # comes back at its authored +25 instead of where the plan is aimed.
+            # The head swings out and back, which reads as the robot losing the
+            # thing it was watching at the exact moment you told it you had seen
+            # the last one.
+            if val == "S5B_TRACK" and ctxd.get("aimed_pan") is not None:
+                player.arm_pan_deg(float(ctxd["aimed_pan"]))
+            player.arm_next(val)
+            # Its screen says "I heard you.", which is true after a request and a
+            # non-sequitur here. Held back for the length of the nod; see below.
+            ctxd["hush_heard_until"] = time.time() + 1.9
         elif kind == "ui":
-            if link:
+            # A BORROWED NOD KEEPS ITS MOTION, NOT ITS SCREEN. S3_ACK is the nod,
+            # and its screen is "I heard you." -- true when it follows a request,
+            # S3_ACK is the affirmation nod and its screen is "I heard you." --
+            # true when it follows a request, a non-sequitur when the robot is
+            # introducing itself or acknowledging that you looked at a report.
+            # The flow sets the screen from the state, so without this the hello
+            # slides in and is overwritten a frame later by a sentence about
+            # listening.
+            #
+            # Only `heard` is held back, and only while the nod runs: whatever
+            # arrives on the far side of it -- `idle` after the greeting,
+            # `tracking` after OK -- must pass, or the screen never comes back.
+            if val == "heard" and time.time() < ctxd.get("hush_heard_until", 0):
+                pass
+            elif link:
                 link.event("UI", val)
         elif kind == "noticed":
             if link:
@@ -749,10 +795,12 @@ def main():
             if story is not None:
                 story.reset()
             # The display half of that reset. `collecting` is the spinner row for
-            # stories still gathering panels; STOP has just voided them, so the
-            # row has to go with them or the page advertises work that will never
-            # produce a card. The FINISHED cards are untouched -- see the note in
-            # the `noticed` handler.
+            # stories still gathering panels, and after the reset there are none
+            # -- not because STOP voided them (it no longer does; it closes them
+            # and they arrive as cards a few seconds later) but because they are
+            # no longer GATHERING. Leaving the row up would show a spinner for a
+            # story that has already been written. The FINISHED cards are
+            # untouched -- see the note in the `noticed` handler.
             if UI is not None:
                 with UI.LOCK:
                     UI.STATE["collecting"] = []
@@ -994,6 +1042,15 @@ def main():
     candidate_gate = {"busy": False, "winner": None, "inflight": 0,
                       "awaiting": None}
     from planning.sweep_plan import Sweep
+    if a.name and link:
+        # Sent, not greeted: a restart is a researcher action mid-session, and
+        # replaying the hello would announce it to somebody already working.
+        link.name(a.name[:16])
+        print(f"[name] restored {a.name[:16]!r} from --name")
+        if UI is not None:
+            with UI.LOCK:
+                UI.STATE["bot_name"] = a.name[:16]
+
     sweep = Sweep(feed_dir=a.feed_dir)
     os.makedirs(a.feed_dir, exist_ok=True)
     stt.warm()              # load Whisper now, not under the first participant
@@ -1118,6 +1175,11 @@ def main():
         if winner is None:
             candidate_gate["busy"] = False
             print(f"[confirm] group rejected: {result.get('note', '')}")
+            # Serve the short cooldown, not the full one -- see ST.REJECTED_COOLDOWN_S.
+            if view is not None and view.executor is not None:
+                for entry in entries:
+                    view.executor.recool(entry, ST.REJECTED_COOLDOWN_S,
+                                         backoff=True)
             return
         candidate["entry"] = winner
         candidate_gate["winner"] = winner_label
@@ -1191,54 +1253,66 @@ def main():
                 with UI.LOCK:
                     sentence = UI.STATE.get("pending_context")
                     UI.STATE["pending_context"] = None
-                    raw_spec = UI.STATE.get("pending_spec")
-                    UI.STATE["pending_spec"] = None
-                # ---- THE RESEARCHER'S OVERRIDE -------------------------------
+                    new_name = UI.STATE.get("pending_name")
+                    UI.STATE["pending_name"] = None
+                    force_now = bool(UI.STATE.get("pending_finding"))
+                    UI.STATE["pending_finding"] = False
+                    resweep_now = bool(UI.STATE.get("pending_resweep"))
+                    UI.STATE["pending_resweep"] = False
+                # ---- THE NAME, AND THE ONE TIME IT GREETS --------------------
                 #
-                # Hand-corrected watch entries, installed WITHOUT re-planning.
-                # Until now the only way to change what the robot watches was to
-                # say the brief again, which re-sweeps and calls the VLM -- 6 s
-                # on a good evening and 62 s during the slowdowns measured
-                # 2026-08-08 -- with a participant sitting there. This path
-                # touches neither: it compiles the edited entries and swaps the
-                # executor.
+                # Fired when the name ARRIVES rather than at process start, which
+                # is also when it means something: the participant chooses a name
+                # in the introduction, the researcher types it, and the robot
+                # wakes up and says it back. Starting the loop is a researcher
+                # action and there is nobody to greet yet.
                 #
-                # Validated with the planner's own `validate`, so a hand-edit
-                # cannot install something the VLM would not have been allowed
-                # to. A rejected edit changes nothing and says why on the page;
-                # the running spec is never left in a half-applied state.
-                if raw_spec is not None and view is not None:
-                    from planning.planner import validate as _validate
-                    err = ""
-                    try:
-                        rows = json.loads(raw_spec)
-                        base = dict(view.spec or {})
-                        base["watch"] = [
-                            {"all": [int(i) for i in (r.get("ids") or [])],
-                             "on": (r.get("on") or "").strip() or None,
-                             "within_s": 5.0,
-                             "label": (r.get("label") or "").strip()
-                                      or f"manual {n + 1}"}
-                            for n, r in enumerate(rows)]
-                        # `on: None` must not survive as a key for relations that
-                        # forbid an object -- validate() checks arity.
-                        for e in base["watch"]:
-                            if e["on"] is None:
-                                e.pop("on")
-                        v = _validate(base, "restricted")
-                        if v:
-                            err = "not installed:\n" + "\n".join(map(str, v))
-                        elif view.set_plan(base, view.context):
-                            print(f"[manual] watch-spec replaced by hand: "
-                                  f"{[(e['all'], e.get('on')) for e in base['watch']]}")
-                        else:
-                            err = "not installed: set_plan refused it"
-                    except Exception as exc:
-                        err = f"not installed: {str(exc)[:140]}"
-                    if err:
-                        print(f"[manual] {err}")
-                    with UI.LOCK:
-                        UI.STATE["spec_error"] = err
+                # arm_next before request, because S3_ACK's `then` is S4_PLAN --
+                # asking for the clip alone would walk straight into a sweep with
+                # no request to plan for. That override exists for exactly this:
+                # a tool that knows where a one-shot should land before it ends.
+                if new_name and link:
+                    ctxd["bot_name"] = new_name
+                    link.name(new_name)
+                    print(f"[name] it is called {new_name!r} -- greeting")
+                    # S3_ACK is 1.67 s; hold the screen a little past it so the
+                    # nod finishes on `hello` and only then falls to `idle`.
+                    ctxd["hush_heard_until"] = time.time() + 1.9
+                    link.ui("hello")
+                    player.arm_next("S1_IDLE")
+                    player.request("S3_ACK")
+                # ---- THE TWO EMERGENCY CONTROLS ------------------------------
+                #
+                # A session is one shot. When the actor plays the scene and the
+                # CV does not fire, the choice is between a void session and the
+                # researcher taking over, and the second is worth having.
+                #
+                # `finding` is the flow's own event -- the same one the `f` key
+                # sends -- so it takes the ordinary path: S7a performs the
+                # notice, `noticed` opens a story, the keyframe rule collects the
+                # panels and the narration judge writes the sentence into the
+                # feed. What it skips is the trigger and the CONFIRMATION judge,
+                # which are exactly the two things that failed.
+                #
+                # These replaced a panel for hand-editing the watch entries
+                # (removed 2026-08-12): repairing the SPEC mid-session asks the
+                # researcher to think in relation ids with an actor mid-scene and
+                # a participant watching, and what is wanted at that moment is
+                # not a better spec, it is this noticed now.
+                if force_now:
+                    if story is not None:
+                        # THE PREVIOUS JUDGE'S SENTENCE MUST NOT TRAVEL. Nothing
+                        # was judged here, and `describe` is read by _finalize as
+                        # the opening line -- left standing, the forced card
+                        # would be captioned with the last real finding's words.
+                        story.describe = ""
+                        story.judge_agreed = None
+                    ui_events.append("finding")
+                    print("[manual] forced finding -- skipping the trigger and "
+                          "the judge; the story is collected as usual")
+                if resweep_now:
+                    ui_events.append("resweep")
+                    print("[manual] re-sweep requested")
                 with UI.LOCK:
                     pan_req = UI.STATE.get("pending_pan")
                     UI.STATE["pending_pan"] = None
@@ -1370,6 +1444,9 @@ def main():
                 # a key that does not exist is how the answer got thrown away.
                 if int(decision.get("selected_index", -1)) < 0:
                     print(f"[confirm] rejected: {decision.get('note', '')}")
+                    if view is not None and view.executor is not None:
+                        view.executor.recool(candidate["entry"],
+                                             ST.REJECTED_COOLDOWN_S, backoff=True)
                     candidate_gate["busy"] = False   # or the gate stays shut for
                     candidate_gate["winner"] = None  # the rest of the session
                     continue
@@ -1472,7 +1549,24 @@ def main():
                             "A previous event group is still being judged or reported.",
                             ctxd.get("plan_generation", 0),
                         )
-                    print(f"[watch] suppressed later group of {len(entries)} card(s): gate busy")
+                    # AND ALL BUT GIVE THEM BACK THEIR COOLDOWN. The gate being
+                    # busy is a fact about the previous moment, not about these
+                    # cards; they reported nothing, so they owe nothing. Charged
+                    # fifteen seconds for the collision, the next real occurrence
+                    # is refused as well -- reported 2026-08-12 as cards that sit
+                    # in cooldown and never fire again.
+                    #
+                    # A FEW SECONDS RATHER THAN ZERO, though. This was a full
+                    # refund (`unfire`) while firing still required a fresh edge,
+                    # which held the card back until the relation broke and
+                    # re-formed. With the edge requirement gone a zero cooldown
+                    # means it fires again on the very next frame, into the same
+                    # gate that is still busy, once per frame until it clears.
+                    if view is not None and view.executor is not None:
+                        for entry in entries:
+                            view.executor.recool(entry, ST.SUPPRESSED_RETRY_S)
+                    print(f"[watch] suppressed later group of {len(entries)} card(s): "
+                          f"gate busy -- retrying in {ST.SUPPRESSED_RETRY_S:.0f}s")
                 else:
                     candidate_gate["busy"] = True
                     labels = [entry.get("label") for entry in entries]
@@ -1723,6 +1817,16 @@ def main():
     except KeyboardInterrupt:
         print("\ninterrupted")
     finally:
+        # CLOSE THE BOOKS BEFORE ANYTHING ELSE. A story stays open through
+        # `linger` for its follow-through, so stopping the run inside that window
+        # used to discard the whole finding -- strip, sentence and log line --
+        # including ones the judge had already confirmed. First thing in the
+        # teardown, because the rest of it prints and closes ports.
+        if story is not None:
+            try:
+                story.flush("run stopped")
+            except Exception as exc:
+                print(f"[story] flush failed: {str(exc)[:90]}")
         print(f"[loop] frames offered to perception: {ctx.get('frames_seen', 0)}")
         print(f"[loop] LED updates sent: {counts['led']}, sounds: {counts['sfx']}")
         if link and counts["led"] == 0:

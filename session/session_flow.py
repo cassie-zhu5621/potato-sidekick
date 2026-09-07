@@ -97,6 +97,7 @@ class SessionFlow:
         self._plan_at = None         # when it went out, for PLAN_TIMEOUT_S
         self._watch_since = None     # watching this angle since, for REPLAN_IDLE_S
         self._s8_at = None           # in S8 since, for S8_RECOVER_S
+        self._clear_board_on_land = False   # OK pressed; empty the board after the nod
         self._planned_at = None      # the last plan LANDED at, for REPLAN_PERIOD_S
         self.out = []
 
@@ -259,6 +260,22 @@ class SessionFlow:
                 self._emit("log", f"reaim ignored in {self.state}")
             return self.out
 
+        if ev == "resweep":
+            # THE NINE-MINUTE SWEEP, ON DEMAND. Same path as the REPLAN_PERIOD_S
+            # timer below, and deliberately the same path: a researcher pressing
+            # this mid-session must produce a robot that behaves exactly as it
+            # would have on its own, or the session is no longer an instance of
+            # the design being studied.
+            #
+            # Only from watching. Firing it during S4 would put a second sweep
+            # inside the one already running; from S1 there is no request yet and
+            # `_replan` would return silently, which reads as a dead button.
+            if self.state in ("S5A_SETTLE", "S5B_TRACK") and not self.plan_pending:
+                self._replan("re-sweep asked for by hand")
+            else:
+                self._emit("log", f"resweep ignored in {self.state}")
+            return self.out
+
         if ev == "finding":
             if self.state in ("S5B_TRACK",):
                 self.noticed += 1
@@ -300,9 +317,29 @@ class SessionFlow:
                 # different question -- what has it found for me -- and that
                 # answer should not depend on which button was pressed. See
                 # session/feed.py.
-                self.noticed = 0
-                self._emit("noticed", 0)
-                self._go("S5B_TRACK", "OK -- seen; back to watching")
+                # THE COUNT IS NOT WIPED IN FRONT OF THEM. Clearing it on the
+                # press made the board read "0 noticed" at the instant they
+                # acknowledged the report -- which looks like the report being
+                # deleted, not like an inbox being emptied. It still clears; it
+                # clears when the nod lands and the screen has already moved on
+                # to tracking, where nobody is reading a number.
+                self._clear_board_on_land = True
+                # A NOD, BECAUSE THE POSE NO LONGER SAYS IT.
+                #
+                # S7 used to rest ten degrees below the watching pose, so OK
+                # produced a visible lift and that lift was the acknowledgement.
+                # S7 v6 moved the ten degrees into the push and rests exactly
+                # where S5b watches from -- which is what lets a storyboard span
+                # both as one shot, and which leaves OK with no motion at all:
+                # measured 0.0 difference in tilt and nod between S7b's last
+                # frame and S5b's first. The board beeps; the robot does nothing.
+                #
+                # S3_ACK is the affirmation nod -- "got it". Reused here for the
+                # same act one turn later: you have seen what I showed you.
+                # `ack_then` arms the landing FIRST, because S3_ACK's own `then`
+                # is S4_PLAN and requesting the clip bare would walk into a sweep.
+                self._emit("ack_then", "S5B_TRACK")
+                self._go("S3_ACK", "OK -- seen; nodding, then back to watching")
             return self.out
 
         if ev == "planned":
@@ -343,6 +380,10 @@ class SessionFlow:
                 # has no way to tell it apart from the real thing.
                 if arg == "S5B_TRACK" and self.plan_pending:
                     screen = "planning"
+                if arg == "S5B_TRACK" and self._clear_board_on_land:
+                    self._clear_board_on_land = False
+                    self.noticed = 0
+                    self._emit("noticed", 0)
                 self._ui(screen)
                 self._s7_at = self.now() if arg == "S7b" else None
                 self._s8_at = self.now() if arg == "S8_ERROR" else None

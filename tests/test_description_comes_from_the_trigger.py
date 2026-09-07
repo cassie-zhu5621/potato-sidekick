@@ -43,7 +43,7 @@ def test_a_story_that_never_developed_asks_nothing_further():
     the request in hand. A second call could only paraphrase it."""
     src = _finalize_src()
     i = src.index("if n <= 1:")
-    assert "note = self.describe or note" in src[i:i + 120]
+    assert "note = describe or note" in src[i:i + 120]
     assert "run_judge" not in src[i:src.index("elif", i)]
 
 
@@ -53,7 +53,7 @@ def test_a_developing_story_is_narrated_from_the_trigger_onward():
     than starting over."""
     src = _finalize_src()
     i = src.index("elif not self.offline:")
-    assert "opening=self.describe" in src[i:i + 500]
+    assert "opening=describe" in src[i:i + 500]
 
 
 def test_the_trigger_sentence_is_the_floor_everywhere():
@@ -61,7 +61,7 @@ def test_the_trigger_sentence_is_the_floor_everywhere():
     to the sentence written at the trigger, never to the raw relation trace,
     which reads `hands_on -> quiet` and means nothing to a participant."""
     src = _finalize_src()
-    assert src.count("self.describe or note") >= 3
+    assert src.count("describe or note") >= 3
 
 
 def test_the_sentence_is_cleared_between_tasks():

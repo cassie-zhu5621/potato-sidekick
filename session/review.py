@@ -210,14 +210,21 @@ document.getElementById('cp').addEventListener('click', async ()=>{
 // static and silently so. That is the researcher's own copy; the tablet is
 // served, and that is the one this is for.
 const SEEN='rv:'+SESSION+':n';
-let sig=null;
+// `undefined` = never polled. `null` = polled, and the log DOES NOT EXIST YET --
+// which is the state every session starts in, because the first report is what
+// creates the file. Treating a missing file as "no answer" and returning early
+// meant the first successful poll was mistaken for the first poll: it recorded a
+// baseline instead of reloading, and the FIRST report never appeared. Only the
+// second one did, or a refresh by hand.
+let sig=undefined;
 async function poll(){
+  let cur=null;
   try{
     const r=await fetch('attention_log.jsonl',{method:'HEAD',cache:'no-store'});
-    const s=(r.headers.get('Last-Modified')||'')+'|'+(r.headers.get('Content-Length')||'');
-    if(sig===null) sig=s;
-    else if(s!==sig){ sessionStorage.setItem(SEEN, ROWS.length); location.reload(); }
-  }catch(e){}
+    if(r.ok) cur=(r.headers.get('Last-Modified')||'')+'|'+(r.headers.get('Content-Length')||'');
+  }catch(e){ return; }              // a network hiccup is not a change
+  if(sig===undefined){ sig=cur; return; }
+  if(cur!==sig){ sessionStorage.setItem(SEEN, ROWS.length); location.reload(); }
 }
 setInterval(poll,2000); poll();
 
@@ -262,6 +269,10 @@ def build(session_dir, allow_empty=False) -> str | None:
             f'{len(recs)} report{"s" if len(recs) != 1 else ""}</div>']
 
     if not recs:
+        # ALLOW_EMPTY, i.e. the page a session opens with. It says so rather than
+        # rendering a bare heading: a tablet showing a title and nothing else is
+        # indistinguishable from one that failed to load, and the researcher
+        # checking it at the top of the session cannot tell which.
         body.append('<div class="none">It hasn\'t noticed anything yet.</div>')
 
     rows, last_req = [], object()

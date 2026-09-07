@@ -49,7 +49,7 @@ def test_single_ok_does_not_duplicate_an_exact_watch_entry():
     assert [entry["label"] for entry in ex.entries] == ["holding cup"]
 
 
-def test_cooldown_counts_down_and_requires_a_new_edge_after_expiry():
+def test_the_cooldown_is_the_only_thing_holding_a_satisfied_entry_back():
     ex = WatchExecutor(
         {"watch": [{"all": [9], "label": "holding cup"}]},
         persist=1, cooldown=15, default_within=2,
@@ -65,22 +65,34 @@ def test_cooldown_counts_down_and_requires_a_new_edge_after_expiry():
     assert fired == []
     assert status[0].cooldown_remaining_s == 10.0
 
-    # Break and re-form during cooldown. Holding through expiry must NOT fire
-    # automatically; the user explicitly chose fresh-edge semantics.
+    # THE COOLDOWN ENDS -> IT FIRES, whether or not the relation ever let go.
+    #
+    # This asserted the opposite until 2026-08-12: "holding through expiry must
+    # NOT fire automatically; the user explicitly chose fresh-edge semantics"
+    # (2026-08-04). Cassie reversed that decision on her reasoning about the
+    # room -- an actor does not stand there repeating themselves, they finish and
+    # leave, so the release requirement protected nothing real. What it did do
+    # was let one accidental trigger by somebody sitting nearby latch the entry
+    # for as long as their hand stayed put, locking out the genuine event at that
+    # spot afterwards. The page showed it as "held . release to rearm".
+    #
+    # The break at t=8 below is therefore incidental now; see
+    # test_a_hand_that_never_lets_go_still_reports_again for the case without it.
     ex.step(off, 8.0)
-    ex.step(off, 11.0)       # beyond within_s: fully re-armed edge detector
+    ex.step(off, 11.0)
     fired, _ = ex.step(on, 12.0)
-    assert fired == []       # still cooling
+    assert fired == []       # still cooling -- deferred, not discarded
     fired, status = ex.step(on, 16.0)
-    assert fired == []
-    assert status[0].satisfied and not status[0].cooling
-
-    # Only another release and new onset after cooldown may fire again.
-    ex.step(off, 17.0)
-    ex.step(off, 20.0)
-    fired, status = ex.step(on, 21.0)
     assert [entry["label"] for entry in fired] == ["holding cup"]
     assert status[0].cooldown_remaining_s == 15.0
+
+    # And that fire starts a cooldown of its own, like any other.
+    ex.step(off, 22.0)
+    ex.step(off, 25.0)
+    fired, status = ex.step(on, 26.0)
+    assert fired == []
+    fired, status = ex.step(on, 32.0)
+    assert [entry["label"] for entry in fired] == ["holding cup"]
 
 
 def test_coincident_candidates_prefer_specificity_then_planner_order():

@@ -24,7 +24,8 @@
  *
  *   Laptop -> CoreS3
  *     EVT UI <screen>      one of: idle recording waiting heard planning
- *                          tracking notthat noticed error   (states.py SCREENS)
+ *                          tracking notthat noticed error black hello
+ *                          (states.py SCREENS; `hello` is the greeting)
  *     EVT NOTICED <n>      session cumulative count, shown on `noticed`.
  *                          The LAPTOP owns this number: it owns the feed, so one
  *                          source of truth, and it survives a reboot here.
@@ -37,8 +38,12 @@
  *     EVT SFX <name>       curious ack shutter puzzled excited lost | NONE
  *     EVT LEVEL <0-100>    mic level for the recording bar
  *     EVT VOL <0-255>      speaker volume; 0 for a silent run
+ *     EVT NAME <text>      what the participant called it. ASCII only (the GFX
+ *                          font is 32..126). Shown on `idle`, and slid in once on
+ *                          `hello`. Data, not firmware: one flash teaches the
+ *                          command, every later name is a serial line.
  *     EVT REST             end of a run: go quiet, back to idle + warm breath
- *     EVT PING             -> `IN PONG cores3_sidekick v5`
+ *     EVT PING             -> `IN PONG cores3_sidekick v6`
  *
  *   CoreS3 -> Laptop
  *     IN PTT_DOWN / IN PTT_UP     the green button, held
@@ -372,6 +377,52 @@ void uiDrawBar() {
   M5.Display.fillRect(x + 3 + fill, y + 3, (w - 6) - fill, h - 6, TFT_BLACK);
 }
 
+// ---------------- THE NAME IT WAS GIVEN ---------------------------------------
+//
+// Sent from the laptop as `EVT NAME <text>`, not compiled in: the participant
+// names it in the introduction and the researcher types it there and then. One
+// flash teaches the board the command; after that a new name is a serial line.
+//
+// ASCII ONLY, and that is not a shortcut. The default GFX font is 32..126, so a
+// non-Latin name comes out as blanks and does so SILENTLY. The study asks for
+// Latin names for this reason.
+String botName = "";
+
+// Big for a short name, smaller for a long one, rather than one size that either
+// wastes the screen or overruns it. Char cell is 6*size px wide; 300 px usable.
+int nameSize(const String& n) {
+  int len = n.length();
+  if (len <= 10) return 4;
+  return 3;                       // 16 chars; longer is truncated by drawName
+}
+
+// A FACE PER SCREEN. Small, ASCII, and second to the words -- it is there so the
+// thing reads as somebody rather than as a status line. `recording` gets none:
+// the participant is mid-sentence with a finger on the button and needs the dot,
+// the word and the level bar, not a fourth thing to look at.
+const char* uiFace() {
+  if (uiScreen == "idle")      return "-_-";      // asleep; the zzz is drawn beside it
+  if (uiScreen == "waiting")   return "._.";
+  if (uiScreen == "heard")     return "^o^";
+  // planning: NO FACE. This is the one screen whose job is to send the eye
+  // ELSEWHERE -- the head is sweeping the room and that movement is the message.
+  // A face here competes with the thing it is meant to introduce.
+  if (uiScreen == "tracking")  return "o_o";     // open, watching
+  if (uiScreen == "notthat")   return ">_<";
+  if (uiScreen == "noticed")   return "\\^o^/";  // the one it calls you over for
+  if (uiScreen == "error")     return "x_x";
+  return "";
+}
+
+void drawName(int x, int y) {
+  String n = botName;
+  if (n.length() > 16) n = n.substring(0, 16);
+  M5.Display.setTextColor(TFT_WHITE);
+  M5.Display.setTextDatum(middle_center);
+  M5.Display.setTextSize(nameSize(n));
+  M5.Display.drawString(n, x, y);
+}
+
 const char* uiText() {
   // "idle" was the state's name leaking onto the participant's screen. It is
   // accurate and it is not for them: it describes what the machine is not
@@ -410,23 +461,72 @@ void uiDraw() {
     M5.Display.setTextDatum(middle_center);
     M5.Display.setTextSize(6);
     M5.Display.drawString(String(noticedN), SCREEN_W / 2, 70);
+    // The face sits on the SAME line as the word, to its right: this screen's
+    // job is the number and the OK button, and a face on a line of its own would
+    // take a third of the height from them.
     M5.Display.setTextSize(3);
-    M5.Display.drawString("noticed", SCREEN_W / 2, 122);
-  } else if (uiScreen == "idle") {
-    // Two lines, not "ready ^_^" on one. On one line the face trails the word
-    // like punctuation; given its own line and a larger size it reads as a
-    // face, which is the whole point of putting it there.
+    M5.Display.setTextDatum(middle_right);
+    M5.Display.drawString("noticed", SCREEN_W / 2 + 26, 122);
+    M5.Display.setTextDatum(middle_left);
+    M5.Display.drawString(uiFace(), SCREEN_W / 2 + 36, 122);
+    M5.Display.setTextDatum(middle_center);
+  } else if (uiScreen == "hello") {
+    // THE ONE ANIMATION ON THIS BOARD, and it runs once. "I'm" is already there
+    // when the name arrives, so the sentence completes itself as the word lands
+    // rather than appearing whole -- which is the difference between a robot
+    // saying its name and a screen displaying it.
     //
-    // PURE ASCII, deliberately. The default GFX font is 32..126 only -- a
-    // Unicode kaomoji would come out as blanks or tofu, and it would do so
-    // silently, on the one screen a participant looks at before deciding
-    // whether this thing works.
+    // 800 ms against S3_ACK's two nods at 0.83 s each: the name lands on the
+    // first one. Slide rather than flash -- a flash is what S8 uses for a fault,
+    // and a robot that blinks at you on meeting is saying the wrong thing.
+    //
+    // No buttons on this screen, so the whole 240 px is available and the layout
+    // is not the one `idle` uses. Blocking, deliberately: it is under a second,
+    // it happens once before the session starts, and a state machine in uiTick
+    // would be more moving parts than the effect is worth.
+    const int Y = 112, STEPS = 16;
+    String n = botName; if (n.length() > 16) n = n.substring(0, 16);
     M5.Display.setTextColor(TFT_WHITE);
     M5.Display.setTextDatum(middle_center);
     M5.Display.setTextSize(3);
-    M5.Display.drawString(uiText(), SCREEN_W / 2, 62);
-    M5.Display.setTextSize(4);
-    M5.Display.drawString("^_^", SCREEN_W / 2, 100);
+    M5.Display.drawString("I'm", SCREEN_W / 2, 54);
+    for (int i = 1; i <= STEPS; i++) {
+      int x = SCREEN_W + (SCREEN_W / 2 - SCREEN_W) * i / STEPS;
+      M5.Display.fillRect(0, Y - 24, SCREEN_W, 48, TFT_BLACK);
+      M5.Display.setTextDatum(middle_center);
+      M5.Display.setTextSize(nameSize(n));
+      M5.Display.drawString(n, x, Y);
+      delay(800 / STEPS);
+    }
+    M5.Display.setTextSize(3);
+    M5.Display.drawString("^_^", SCREEN_W / 2, 178);
+  } else if (uiScreen == "idle") {
+    // THE NAME, AND A SLEEPING FACE, BOTH ABOVE y=132 -- that is where the PTT
+    // and STOP buttons start, and the first version had the face sitting on top
+    // of them. There is 132 px of screen here, not 240.
+    //
+    // Asleep is honest: idle is "present, not attending". Closed eyes are a
+    // millimetre from a thinking face, so the zzz carries it from a desk away --
+    // small and offset, a detail on the face rather than a second message.
+    if (botName.length()) {
+      drawName(SCREEN_W / 2, 48);
+      M5.Display.setTextColor(TFT_WHITE);
+      M5.Display.setTextDatum(middle_center);
+      M5.Display.setTextSize(3);
+      M5.Display.drawString(uiFace(), SCREEN_W / 2, 100);
+      M5.Display.setTextSize(2);
+      M5.Display.setTextDatum(bottom_left);
+      M5.Display.drawString("z z z", SCREEN_W / 2 + 42, 96);
+    } else {
+      M5.Display.setTextColor(TFT_WHITE);
+      M5.Display.setTextDatum(middle_center);
+      M5.Display.setTextSize(5);
+      M5.Display.drawString(uiFace(), SCREEN_W / 2, 76);
+      M5.Display.setTextSize(2);
+      M5.Display.setTextDatum(bottom_left);
+      M5.Display.drawString("z z z", SCREEN_W / 2 + 66, 64);
+    }
+    M5.Display.setTextDatum(middle_center);
   } else if (uiScreen == "black") {
     // nothing: the fillScreen at the top already painted it black, and the
     // final else would print uiText() -- exactly the caption this screen
@@ -435,7 +535,9 @@ void uiDraw() {
     M5.Display.setTextColor(TFT_WHITE);
     M5.Display.setTextDatum(middle_center);
     M5.Display.setTextSize(3);
-    M5.Display.drawString(uiText(), SCREEN_W / 2, 80);
+    M5.Display.drawString(uiText(), SCREEN_W / 2, 72);
+    const char* f = uiFace();
+    if (f[0]) { M5.Display.setTextSize(4); M5.Display.drawString(f, SCREEN_W / 2, 116); }
   }
   for (int i = 0; i < uiNBtn; i++) uiDrawBtn(i);
 }
@@ -566,7 +668,12 @@ void handleLine(String line) {
   String arg = (sp < 0) ? ""   : rest.substring(sp + 1);
   cmd.toUpperCase();
 
-  if      (cmd == "UI")      uiSet(arg);
+  if      (cmd == "NAME")    { arg.trim(); botName = arg;
+                               // Redraw NOW if the name is on screen. Waiting for
+                               // the next EVT UI would leave the old name up
+                               // while the researcher watches to see it took.
+                               if (uiScreen == "idle" || uiScreen == "hello") uiDraw(); }
+  else if (cmd == "UI")      uiSet(arg);
   else if (cmd == "NOTICED") { noticedN = arg.toInt();
                                if (uiScreen == "noticed") uiDraw(); }
   else if (cmd == "LEVEL")   recLevel = arg.toInt();
@@ -679,7 +786,7 @@ void handleLine(String line) {
     setAntennaHue(255, 242, 224);   // = WARM. Keep in sync with HUE above.
     uiSet("idle");
   }
-  else if (cmd == "PING") Serial.println("IN PONG cores3_sidekick v5");
+  else if (cmd == "PING") Serial.println("IN PONG cores3_sidekick v6");
 }
 
 // ---------------- setup / loop -------------------------------------------------
@@ -692,7 +799,7 @@ void setup() {
   antennaInit();
   tapInit();
   uiDraw();                 // the idle screen, immediately -- no legacy layout
-  Serial.println("IN HELLO cores3_sidekick v5");
+  Serial.println("IN HELLO cores3_sidekick v6");
 }
 
 void loop() {

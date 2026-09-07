@@ -178,7 +178,7 @@ def test_the_verdict_lands_on_the_record_not_only_the_screen():
     import inspect
     from session import storyboard as SB
     src = inspect.getsource(SB.Storyboard._finalize)
-    assert '"judge_agreed": self.judge_agreed' in src
+    assert '"judge_agreed": b.get("judge_agreed", self.judge_agreed)' in src
 
     loop = noticebot_loop.__loader__.get_source("noticebot_loop")
     i = loop.index('candidate.get("fired_early")')

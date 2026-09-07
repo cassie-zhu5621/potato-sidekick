@@ -50,6 +50,14 @@ expect(f.screen == "tracking", "only says tracking once the direction is known")
 f.feed("finding")
 expect(f.state == "S7a" and f.noticed == 1, "finding -> S7a, count 1")
 f.feed("arrived:S7b"); f.feed("ok")
+# OK NODS FIRST. S7 v6 rests exactly where S5b watches from -- 0.0 degrees apart
+# in tilt and nod -- so returning to watching is no longer a visible movement and
+# the acknowledgement had nothing to carry it. S3_ACK is borrowed for it, with
+# `ack_then` arming the landing because its own `then` is S4_PLAN.
+expect(f.state == "S3_ACK", "OK -> a nod of assent")
+expect(any(k == "ack_then" and v == "S5B_TRACK" for k, v in f.out),
+       "the nod is armed to land on watching, not to walk into a sweep")
+f.feed("arrived:S5B_TRACK")
 expect(f.state == "S5B_TRACK", "OK -> back to watching")
 
 print("\n--- planner failure is visible ---")
@@ -395,7 +403,7 @@ f = flow()
 run(f, ["ptt_down", "ptt_up", "transcript:watch the desk",
         "arrived:S4_PLAN", "arrived:S5B_TRACK", "planned"], "")
 CLOCK[0] += ST.REPLAN_IDLE_S - 2
-run(f, ["finding:cup", "ok"], "")
+run(f, ["finding:cup", "ok", "arrived:S5B_TRACK"], "")   # ok nods, then lands
 CLOCK[0] += ST.REPLAN_IDLE_S - 2
 f.feed("tick")
 expect(f.state == "S5B_TRACK",

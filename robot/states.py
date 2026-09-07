@@ -440,6 +440,32 @@ REPLAN_IDLE_S = 0.0      # OFF for the user study. Was 60.
                          # is wrong, and a machine that re-scans every half minute
                          # reads as agitated rather than attentive.
                          # Set to 0 or None to switch the idle re-plan off.
+# What a REJECTED candidate serves instead of the full cooldown.
+#
+# The full one (--cooldown, 15 s) is the price of having told somebody something:
+# do not say the same thing twice. A rejection told nobody anything. And the
+# relation that produced it is usually still true -- a person standing in front
+# of the plant they have not touched, a hand near the board -- so the next rising
+# edge, which may be the real event, arrives inside the penalty and is refused.
+#
+# Not zero: the attempt spent a VLM call, and a continuously-true relation would
+# otherwise re-ask the judge on every edge. Four seconds is long enough to stop a
+# burst and short enough that the contact two seconds later still reports.
+#
+# DOUBLES ON EACH CONSECUTIVE REJECTION, capped at the full cooldown -- 4, 8, 15.
+# Firing no longer needs a fresh edge (2026-08-12), so a relation that is
+# continuously true and continuously wrong -- leaning on the board while the card
+# says drawing on it -- would otherwise re-ask the judge every four seconds for
+# as long as the person stood there. The judge gate is single-file: whatever
+# occupies it is suppressing every other card. The count resets as soon as the
+# entry stops being satisfied.
+REJECTED_COOLDOWN_S = 4.0
+
+# And what a card the BUSY GATE dropped serves. Shorter still: unlike a rejection
+# this one cost nothing, no VLM call was made and nobody said no -- the only job
+# is to stop it re-firing on every frame until the gate clears.
+SUPPRESSED_RETRY_S = 2.0
+
 REPLAN_PERIOD_S = 540.0  # ONE self-directed sweep per session, placed on purpose.
                          #
                          # This is the only moment the robot acts on its own
@@ -589,7 +615,11 @@ SCREENS = {
     "noticed":   ("{n} noticed",   ("OK",)),        # no cancel on the screen the
                                                     # participant is most likely
                                                     # to touch -- see uiLayout
-    "error":     ("error",         ("OK",)),        # leaving S8 is affirmative,
+    "error":     ("error",         ("OK",)),
+    "hello":     ("<the name>",    ()),          # the greeting; no buttons, and
+                                                 # the only animated screen there
+                                                 # is -- it slides in once and is
+                                                 # never shown again        # leaving S8 is affirmative,
                                                     # and nothing is discarded
 }
 

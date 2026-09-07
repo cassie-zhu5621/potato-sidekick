@@ -95,9 +95,25 @@ class Storyboard:
         os.makedirs(feed_dir, exist_ok=True)
 
     def reset(self):
-        """Cancel unfinished stories when STOP begins a fresh task."""
+        """STOP begins a fresh task. CLOSE the open stories -- never discard them.
+
+        This used to `bursts.clear()`, and that is how a judge-CONFIRMED finding
+        vanished on 2026-08-12: confirmed 17:45:14, STOP pressed ~40 s later to
+        give a new instruction, nothing in attention_log.jsonl.
+
+        A STORY ONLY EXISTS AFTER THE ROBOT HAS ALREADY SPOKEN. `open` hangs off
+        the flow's `noticed` emission, not off the detector, so by the time there
+        is a burst the chirp has sounded and the card is on the board -- the
+        participant may already have pressed OK. STOP voids the PLAN, meaning no
+        further findings; it cannot un-tell them something. Every burst this
+        method used to cancel was one that had already reached somebody.
+
+        Threaded, unlike the teardown flush: STOP is mid-session and `_finalize`
+        makes a narration call, so doing it inline would hold the loop for
+        several seconds with the LED heartbeat owed every 300 ms.
+        """
+        self.flush("task stopped", threaded=True)
         self.generation += 1
-        self.bursts.clear()
         self.count = 0
         # The judge's sentence belongs to the finding it was written for. Left
         # standing, the next task's first card would wear the last one's words.
@@ -212,17 +228,66 @@ class Storyboard:
                 threading.Thread(target=self._finalize, args=(b,),
                                  daemon=True).start()
 
+    def flush(self, why="run ended", threaded=False):
+        """Close every open burst with the shots it has. -> how many were written.
+
+        A story stays open through `linger` so the follow-through is on record,
+        which means Ctrl-C during those seconds threw the whole finding away --
+        the strip, the sentence and the log line. Observed 2026-08-12: a finding
+        the judge had CONFIRMED never reached attention_log.jsonl because the run
+        was stopped a few seconds later.
+
+        `threaded=False` for the teardown: the process is on its way out and a
+        daemon thread would be killed halfway through writing the jpeg. STOP
+        passes True -- see `reset`.
+
+        THE PROVENANCE IS SNAPSHOT HERE, not read at finalize time. `_finalize`
+        takes the request, the judge's sentence and its verdict off `self`, and
+        the two callers of this method both wipe those fields microseconds later
+        (`reset`) or exit the process. A threaded finalize would find them empty
+        and publish a card with no sentence and no request attached.
+        """
+        pending, self.bursts = list(self.bursts), []
+        for b in pending:
+            b["truncated"] = True
+            b.setdefault("describe", self.describe)
+            b.setdefault("judge_agreed", self.judge_agreed)
+            b.setdefault("request", self.request)
+            b.setdefault("plan_generation", self.plan_generation)
+        for b in pending:
+            if threaded:
+                threading.Thread(target=self._finalize, args=(b,),
+                                 daemon=True).start()
+                continue
+            try:
+                self._finalize(b)
+            except Exception as exc:            # one bad strip must not eat the rest
+                print(f"[story] could not close {b.get('label','?')}: {str(exc)[:80]}")
+        if pending:
+            print(f"[story] {len(pending)} open story(ies) closed early ({why}) -- "
+                  f"written with the shots they had")
+        return len(pending)
+
     # -------------------------------------------------------------- finalize --
     def _finalize(self, b):
         """Narrate + publish. Off the main thread: this makes a network call and
         the live loop still owes the LED a heartbeat every 300 ms."""
-        if b.get("generation") != self.generation:
-            print(f"[story] cancelled after STOP: {b['label']}")
-            return
+        # NO STORY IS EVER CANCELLED. Two `generation != self.generation` guards
+        # used to sit here -- one at entry, one after the narration call -- and
+        # they dropped the record of a finding the robot had already announced.
+        # See `reset`. The generation is kept as PROVENANCE (`story_generation`
+        # in the record below), which is all it was ever entitled to be: a note
+        # of which task the finding belonged to, not a licence to delete it.
         n = len(b["shots"])
         strip = make_strip(b["shots"])
         story = " -> ".join(dict.fromkeys(b["traces"]))   # dedup, keep order
         note, worth = f"{b['label']}: {story}", None
+        # THE BURST'S OWN COPY WHERE IT HAS ONE. `flush` takes these four off
+        # `self` at close time because its callers wipe them immediately after --
+        # a threaded finalize would otherwise narrate with an empty opening and
+        # publish a card belonging to no request. Normal closes have no snapshot
+        # and fall through to `self`, which is still current for them.
+        describe = b.get("describe", self.describe)
         # ONE PANEL, ONE SENTENCE -- AND IT IS ALREADY WRITTEN.
         #
         # The group judge read five separate frames at the instant the gate
@@ -242,24 +307,24 @@ class Storyboard:
         # followed. The strip is still built and still saved -- it is what a
         # person opens from the feed -- it is simply not what the model reads.
         if n <= 1:
-            note = self.describe or note
+            note = describe or note
         elif not self.offline:
             try:
                 shots = [cv2.imencode(".jpg", f)[1].tobytes() for f in b["shots"]]
                 r = run_judge(shots, None, self.taste, story=story, panels=n,
-                              opening=self.describe)
+                              opening=describe)
                 note, worth = r["note"], r["worth"]
             except Exception as e:
                 print(f"[judge] error: {e} -- keeping the opening sentence")
-                note = self.describe or note
+                note = describe or note
         else:
-            note = self.describe or note
+            note = describe or note
         note = f"{note} ({n}-shot story)"
-        # STOP can arrive while Gemini is narrating. Check again after the
-        # blocking call so an old task cannot repopulate the freshly cleared UI.
-        if b.get("generation") != self.generation:
-            print(f"[story] cancelled after STOP: {b['label']}")
-            return
+        # STOP can arrive while Gemini is narrating, and this is where the second
+        # guard threw the finished card away. A card landing on the page after
+        # STOP is correct: it is stamped with the request it answers and the page
+        # groups by request, so it slots under the old brief rather than
+        # pretending to belong to the new one.
         print(f"[MOMENT] {b['label']} :: {note}")
         fid = time.strftime("%Y%m%d_%H%M%S_") + f"{int(time.time() * 1000) % 1000:03d}"
         rec = {"time": time.strftime("%H:%M:%S"),
@@ -267,12 +332,22 @@ class Storyboard:
                "why": "watch-spec", "note": note,
                "thumb": f"thumb_{fid}.jpg", "frame": f"frame_{fid}.jpg",
                "label": b["label"], "shots": n, "story": story,
+               # THE STRIP ENDED BECAUSE THE RUN DID, not because the event did.
+               # Its length is when Ctrl-C was pressed, so it must not be pooled
+               # with strips whose length is the event's own. Internal: the
+               # review page never shows it (session/review.py).
+               "truncated": bool(b.get("truncated")),
                "truth": b["truth"],
                # provenance -- see __init__
-               "request": self.request,
-               "plan_generation": self.plan_generation,
-               "story_generation": self.generation,
-               "judge_agreed": self.judge_agreed}
+               "request": b.get("request", self.request),
+               "plan_generation": b.get("plan_generation", self.plan_generation),
+               # THE BURST'S OWN, not the board's current one. They were always
+               # equal before -- the cancel guard enforced it -- and reading it
+               # off `self` became a race the moment reset() started flushing:
+               # the thread may publish before or after `generation += 1`, so
+               # the same story logged 0 or 1 depending on scheduling.
+               "story_generation": b.get("generation", self.generation),
+               "judge_agreed": b.get("judge_agreed", self.judge_agreed)}
         import argparse
         publish(strip, rec, argparse.Namespace(save=True, feed_dir=self.feed_dir),
                 self.ui)

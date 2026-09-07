@@ -10,8 +10,18 @@ Semantics (the contract with planner.py / relation_table.md):
                    then — ids BECAME held in this order, all within the window
   - entries in `watch` are alternatives (OR): each can fire independently.
   - `single_ok` ids act as 1-id entries with the default window.
-  - a fired entry enters `cooldown` seconds of habituation (same moment != news twice);
-    holding a satisfied entry does NOT re-fire it — it must break, then re-form.
+  - a fired entry enters `cooldown` seconds of habituation (same moment != news twice).
+    THE COOLDOWN IS THE ONLY THING THAT HOLDS IT BACK. A satisfied entry re-fires
+    as soon as its cooldown ends, whether or not the relation ever broke.
+
+    It used to also require a fresh rising edge — break, then re-form. Removed on
+    2026-08-12 at Cassie's decision, on her reasoning about what actually happens
+    in the room: an actor does not stand there doing the same thing, they finish
+    and leave, so nothing real is protected by demanding a release. What the
+    requirement DID do was let one accidental trigger — somebody sitting nearby
+    doing something else — latch the entry for as long as their hand stayed put,
+    and the genuine event at that spot afterwards could never fire. The page
+    showed this as an entry stuck on "held · release to rearm".
 
 All timing is in SECONDS (fps-independent: M5 ~2fps and a 30fps webcam both work).
 """
@@ -37,6 +47,18 @@ def order_coincident_candidates(entries):
     return [entry for _, entry in sorted(
         enumerate(entries), key=lambda pair: (-specificity(pair[1])[0],
                                                -specificity(pair[1])[1], pair[0]))]
+
+
+def _entry_sig(e):
+    """A watch entry's identity, stable across `dict(e)` copies.
+
+    Deliberately excludes `within` and `label`: the judge and the storyboard
+    both rewrite the label on their copy (the participant-facing sentence), and
+    a card re-worded downstream is still the same card to watch state.
+    """
+    return (tuple(e.get("all") or []), tuple(e.get("any") or []),
+            tuple(e.get("not") or []), tuple(e.get("then") or []),
+            (e.get("on") or "").strip().lower())
 
 
 @dataclass
@@ -83,10 +105,11 @@ class WatchExecutor:
         # per-entry state
         self._fired_at = [-1e9] * len(self.entries)
         self._fired_cd = [cooldown] * len(self.entries)   # cooldown actually applied to last fire
-        self._was_sat = [False] * len(self.entries)
+        self.blocked = []            # entries whose relation held on the wrong object
+        self._rejects = [0] * len(self.entries)   # consecutive judge rejections
 
     # ------------------------------------------------------------------ #
-    def step(self, truth: Dict[int, bool], t: Optional[float] = None):
+    def step(self, truth: Dict[int, bool], t: Optional[float] = None, ok=None):
         """truth: {relation_id: bool} for THIS frame. Returns (fired, statuses)."""
         t = time.time() if t is None else t
         for rid, val in truth.items():
@@ -101,21 +124,101 @@ class WatchExecutor:
                 self._streak[rid] = 0
 
         fired, statuses = [], []
+        self.blocked = []
         for i, e in enumerate(self.entries):
             sat, detail, ordered = self._satisfied(e, t)
+            # THE OBJECT FILTER IS PART OF THE CONDITION, not a review of the
+            # decision. `ok` is the caller's per-entry test -- in the live loop,
+            # `_focus_ok`: did the contact/gaze land on the object THIS card
+            # names. It used to run AFTER step() returned, and by then the damage
+            # was done: `_fired_at` had started a 15 s cooldown for a card that
+            # never fired.
+            #
+            # The relations are global -- truth[9] is "a hand is on SOMETHING" --
+            # so a hand resting on the wrong object holds that bit true, the edge
+            # never returns, and the card sits in a cooldown it never earned.
+            # Reported 2026-08-12 as "there is a suppressed cooldown and it is
+            # cooling forever". Folded in here, a wrong object simply means the
+            # entry is not satisfied, which is what it always meant.
+            if sat and ok is not None and not ok(e):
+                sat = False
+                self.blocked.append(e)
+            # THE SITUATION CHANGED, so a run of rejections about it is over.
+            if not sat:
+                self._rejects[i] = 0
             cooling = t - self._fired_at[i] < self._fired_cd[i]
-            if sat and not self._was_sat[i] and not cooling:
+            # NO EDGE REQUIRED -- see the module docstring. `sat and not cooling`
+            # is the whole rule.
+            if sat and not cooling:
                 self._fired_at[i] = t
                 # a genuinely ORDERED then gets a longer cooldown (rarer, more report-worthy)
                 self._fired_cd[i] = self.cooldown * (self.then_cd_mult if (e["then"] and ordered)
                                                      else 1.0)
                 fired.append(e)
                 cooling = True
-            self._was_sat[i] = sat
             remaining = (max(0.0, self._fired_cd[i] - (t - self._fired_at[i]))
                          if cooling else 0.0)
             statuses.append(EntryStatus(e["label"], sat, cooling, remaining, detail))
         return fired, statuses
+
+    def _index_of(self, entry) -> int:
+        """Which of our entries is this -- by CONTENT, not by identity.
+
+        `fired` hands out the executor's own dicts, but nothing downstream keeps
+        them: the loop immediately does `[dict(e) for e in ...]` so the judge and
+        the storyboard can annotate a candidate without writing into watch state.
+        By the time that copy comes back to `recool`, `e is entry` is false for
+        every entry and it silently returned False.
+
+        Reported 2026-08-12 as "suppressed still shows 14 s" -- the refund had
+        been written, tested against the original object, and never once ran in
+        the live loop. Matching on the entry's content survives the copy.
+
+        Duplicates cannot be ambiguous here: the planner de-duplicates on this
+        same signature, so two entries with it would be the same card twice.
+        """
+        for i, e in enumerate(self.entries):
+            if e is entry:
+                return i
+        sig = _entry_sig(entry)
+        for i, e in enumerate(self.entries):
+            if _entry_sig(e) == sig:
+                return i
+        return -1
+
+    def recool(self, entry, seconds, backoff=False):
+        """Shorten the cooldown a fire is currently serving. -> did it apply.
+
+        A CANDIDATE THAT REACHED NOBODY IS NOT A DELIVERED REPORT. The full
+        cooldown exists so the same moment is not announced twice; a moment the
+        judge threw out, or one the busy gate dropped, was never announced at
+        all, and the relation that produced it is usually still true -- somebody
+        standing near the plant they are not touching. Charging fifteen seconds
+        means the real contact seconds later is refused as well.
+
+        Not a refund, though, and this became the load-bearing part on
+        2026-08-12 when firing stopped requiring a fresh edge. Setting the
+        cooldown to zero now means the entry fires again on the very NEXT frame,
+        into the same busy gate or at the same judge that just said no, once per
+        frame until something changes. A short cooldown is the only throttle
+        left.
+
+        `backoff` doubles it per consecutive rejection, capped at the normal
+        cooldown: 4 -> 8 -> 15 -> 15. Without it a relation that is continuously
+        true and continuously wrong -- leaning on the whiteboard while the card
+        says drawing on it -- would occupy the judge every four seconds for as
+        long as the person stood there, and the gate it occupies is the one every
+        other card has to pass through. The counter resets in `step` the moment
+        the entry stops being satisfied, because that is the situation changing.
+        """
+        i = self._index_of(entry)
+        if i < 0:
+            return False
+        if backoff:
+            self._rejects[i] += 1
+            seconds = min(self.cooldown, seconds * (2 ** (self._rejects[i] - 1)))
+        self._fired_cd[i] = float(seconds)
+        return True
 
     # ------------------------------------------------------------------ #
     def _held_within(self, rid: int, t: float, win: float) -> bool:

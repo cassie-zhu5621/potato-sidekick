@@ -94,6 +94,7 @@ class PlanView:
         self.truth, self.viz = {}, {"dets": [], "people": [], "rays": []}
         self.statuses = []
         self.suppressed = []          # labels the focus gate refused this frame
+        self._blocked_said = set()    # so the gate speaks on the edge, not per frame
         self.plan_error = ""
 
     # ---------------------------------------------------------------- plan ---
@@ -158,16 +159,24 @@ class PlanView:
         if self.executor is None:
             self.statuses = []
             return []
-        raw, self.statuses = self.executor.step(self.truth, t)
-        fired = []
-        for e in raw:
-            if _focus_ok(e, self.viz, self.relevance["focus"]):
-                fired.append(e)
-            else:
-                self.suppressed.append(e.get("label", ""))
-                print(f"[gate] {e.get('label')} suppressed "
-                      f"(gaze/point not on a focus object)")
-        return fired
+        # The focus gate is handed to the executor rather than applied to its
+        # output: an entry whose object does not match is NOT SATISFIED, and a
+        # card that is not satisfied must not spend a cooldown or an edge. See
+        # WatchExecutor.step.
+        raw, self.statuses = self.executor.step(
+            self.truth, t,
+            ok=lambda e: _focus_ok(e, self.viz, self.relevance["focus"]))
+        # Say it once per episode, not once per frame. The relation can hold
+        # against the wrong object for minutes -- somebody working at a desk with
+        # a hand resting on it -- and a line every frame at 4 Hz buries the log
+        # that the researcher is reading to find out why nothing fired.
+        now_blocked = {e.get("label", "") for e in self.executor.blocked}
+        for lab in sorted(now_blocked - self._blocked_said):
+            print(f"[gate] {lab} held back -- the relation holds, but not on "
+                  f"the object this card names")
+        self._blocked_said = now_blocked
+        self.suppressed = sorted(now_blocked)
+        return raw
 
     def entries(self):
         return self.executor.entries if self.executor is not None else []
@@ -333,15 +342,6 @@ class PlanView:
             UI.STATE["focus"] = list(s.get("focus") or [])
             UI.STATE["transcript"] = self.transcript
             UI.STATE["suppressed"] = list(self.suppressed)
-            # The editable shape of the plan, for the researcher's override (the
-            # EDIT row under THE PLAN). Only the three fields a hand-edit ever
-            # touches -- which relations, on what, called what -- so the page
-            # cannot accidentally become a second definition of a watch-spec.
-            UI.STATE["spec_watch"] = [
-                {"ids": list(e.get("all") or []),
-                 "on": e.get("on") or "",
-                 "label": e.get("label") or ""}
-                for e in (s.get("watch") or []) if isinstance(e, dict)]
             UI.STATE["status"] = attention_ui.build_status(
                 self.statuses, self.entries(), self.truth)
             if states is not None:

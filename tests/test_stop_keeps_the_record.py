@@ -53,10 +53,22 @@ def test_a_finding_puts_something_on_the_board():
     assert _to_s7().noticed == 1
 
 
-def test_ok_clears_the_board():
-    """Acknowledging is the whole point of the button: it means 'seen'."""
+def test_ok_clears_the_board_but_not_in_front_of_them():
+    """Acknowledging is the whole point of the button: it means 'seen'. It still
+    empties the board -- the count is an inbox, not a score -- but NOT on the
+    press.
+
+    Clearing on the press put "0 noticed" on the screen at the instant they
+    acknowledged the report, which reads as the report being deleted rather than
+    as an inbox being emptied. The nod now covers that moment, and the number
+    goes when the nod lands and the screen has already moved to tracking, where
+    nobody is reading a number."""
     f = _to_s7()
     out = f.feed("ok")
+    assert f.noticed == 1, "the count was wiped while they were still looking at it"
+    assert not any(k == "noticed" for k, _ in out)
+
+    out = f.feed("arrived:S5B_TRACK")
     assert f.noticed == 0
     assert ("noticed", 0) in out, "the board is not told, so it keeps the number"
 
@@ -69,9 +81,17 @@ def test_stop_clears_the_board_too():
 
 def test_ok_does_not_abandon_the_task():
     """The difference between the two buttons, and the reason OK must not take
-    STOP's clean-up path: OK goes back to watching, so nothing is void."""
+    STOP's clean-up path: OK goes back to watching, so nothing is void.
+
+    It nods on the way. S7 v6 rests exactly where S5b watches from, so returning
+    is no longer a visible movement and the acknowledgement had nothing left to
+    carry it -- the board beeped and the robot did nothing. What matters here is
+    unchanged: the task survives."""
     f = _to_s7()
     out = f.feed("ok")
+    assert f.state == "S3_ACK"
+    assert ("ack_then", "S5B_TRACK") in out, "the nod must be armed to land on watching"
+    f.feed("arrived:S5B_TRACK")
     assert f.state == "S5B_TRACK"
     assert not any(k == "idle" for k, _ in out), (
         "OK emitted `idle`, which tears down the executor and cancels stories "
