@@ -31,19 +31,45 @@ def _st(**kw):
 def test_the_phase_follows_the_robot_not_the_tablet():
     """Every screen is a function of the flow state, so a visitor cannot get the
     tablet onto a page the robot is not on."""
-    cases = [("S1_IDLE", "choose"), ("S3_ACK", "ack"), ("S4_PLAN", "sweep"),
-             ("S5B_TRACK", "watch"), ("S6_FINETUNE", "watch"),
-             ("S7a", "notice"), ("S7b", "notice")]
+    # Scanning and watching are ONE screen -- see the note in booth_state. The
+    # visitor's question in both is which way it is looking, and the grid
+    # answers that continuously; "tracking..." over an empty page said nothing
+    # the robot standing in front of them was not already saying.
+    cases = [("S1_IDLE", "choose"), ("S3_ACK", "ack"), ("S4_PLAN", "room"),
+             ("S5A_SETTLE", "room"), ("S5B_TRACK", "room"),
+             ("S6_FINETUNE", "room"), ("S7a", "notice"), ("S7b", "notice")]
     for state, phase in cases:
         assert booth_state(_st(flow_state=state), [], None)["phase"] == phase, state
 
 
-def test_the_wait_after_the_sweep_is_still_the_sweep_screen():
+def test_the_wait_after_the_sweep_is_not_a_second_choice():
     """The head finishes S4 and moves on while the VLM is still out -- 5 to 20 s
     of it. Falling back to `choose` there would offer the visitor a second
     choice while the first is still being compiled."""
     s = booth_state(_st(flow_state="S5A_SETTLE", plan_pending=True), [], None)
-    assert s["phase"] == "sweep"
+    assert s["phase"] == "room"
+
+
+def test_the_red_frame_follows_the_aim_so_a_tap_has_an_answer():
+    """Correcting the head is a gesture that has to be answered on the tablet.
+    Reddening the sweep's own highest-scoring station instead would leave the
+    frame where it was and make the tap look ignored."""
+    meta = {"dir": "d", "richest_pan": -60,
+            "shots": [{"pan": p, "file": f"p{p}.jpg", "dets": []}
+                      for p in (-60, -30, 0, 30, 60)]}
+    # mid-sweep: no aim yet, so the sweep's own pick stands in
+    assert booth_state(_st(flow_state="S4_PLAN"), [], meta)["chosen_pan"] == -60
+    # watching where the plan aimed it
+    assert booth_state(_st(flow_state="S5B_TRACK", aimed_pan=-58.0),
+                       [], meta)["chosen_pan"] == -60
+    # tapped, re-aimed: the frame moves with it
+    assert booth_state(_st(flow_state="S6_FINETUNE", aimed_pan=28.0),
+                       [], meta)["chosen_pan"] == 30
+
+
+def test_the_loop_publishes_where_it_is_aimed():
+    src = open(os.path.join(ROOT, "noticebot_loop.py")).read()
+    assert 'UI.STATE["aimed_pan"] = ctxd.get("aimed_pan")' in src
 
 
 # ------------------------------------------------------ the visitor's tap --

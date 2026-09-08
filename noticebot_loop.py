@@ -1830,6 +1830,10 @@ def main():
                         UI.STATE["noticed_n"] = int(getattr(flow, "noticed", 0))
                         UI.STATE["describe"] = (story.describe if story else "") or ""
                         UI.STATE["sweep_meta"] = getattr(sweep, "last", None)
+                        # WHERE IT IS ACTUALLY AIMED, which is not the sweep's
+                        # own pick once the head has been corrected. The tablet
+                        # reddens the station nearest this.
+                        UI.STATE["aimed_pan"] = ctxd.get("aimed_pan")
                 if view is not None:
                     view.publish(UI, jpg, states=rows,
                                  collecting=(story.collecting() if story else []))

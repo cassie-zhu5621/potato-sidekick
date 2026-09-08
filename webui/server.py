@@ -55,6 +55,7 @@ STATE = {"jpg": None, "feed": [], "thumbs": {}, "frames": {},
          # back what THEY said rather than the English the planner got.
          "pending_ok": False, "booth_choice_ja": "",
          "describe": "", "noticed_n": 0, "flow_state": "", "plan_pending": False,
+         "aimed_pan": None,
          # What the participant called it. Typed here, sent to the board as
          # EVT NAME, and drawn on `idle` for the rest of the session.
          "bot_name": "", "pending_name": None,

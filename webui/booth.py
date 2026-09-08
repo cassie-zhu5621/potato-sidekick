@@ -16,16 +16,22 @@ words and the faces it had in the study, and the faces are what carry it: a
 sleeping face and a woken one need no translation. Everything a visitor has to
 READ is here, so translating the stand means translating one file.
 
-THE FOUR SCREENS follow the loop the paper is about, one screen per phase:
+THE SCREENS. Fewer than there are states, on purpose -- the strip along the top
+carries the state, and a page swap is reserved for a change in what the visitor
+can DO:
 
     choose   two Japanese sentences. Tapping one posts the ENGLISH sentence
              through the same door a spoken request uses (stt.manual), so the
              planner really compiles it -- the tap replaces the speaking, not
-             the pipeline.
-    sweep    the five stations as the head captures them, then the planner's own
-             boxes, and a red frame on the one it chose. This is the 5-20 s VLM
-             wait, turned into the part of the demo people point at.
-    watch    quiet. What it is watching for, and nothing else moving.
+             the pipeline. Waking the robot does NOT leave this screen: the tap
+             on its head is the move that brings a visitor here, and taking the
+             buttons away at that moment is the one thing the page must not do.
+    room     scanning AND watching, which used to be two. The five stations fill
+             in as the head captures them, the planner's boxes and a red frame
+             arrive with the plan, and the red frame MOVES when the head is
+             corrected. It replaced a screen that said "tracking..." over
+             nothing, which told a visitor less than the robot in front of them
+             already was. The 5-20 s VLM wait becomes the part people point at.
     notice   the same prompt as the robot's own screen, either of which takes
              the OK -- then the story.
 
@@ -106,10 +112,17 @@ def booth_state(STATE, feed_records, sweep_meta):
 
     if now in ("S7a", "S7b"):
         phase = "notice"
-    elif now in ("S4_PLAN",) or STATE.get("plan_pending"):
-        phase = "sweep"
-    elif now in ("S5A_SETTLE", "S5B_TRACK", "S6_FINETUNE"):
-        phase = "watch"
+    elif (now in ("S4_PLAN", "S5A_SETTLE", "S5B_TRACK", "S6_FINETUNE")
+            or STATE.get("plan_pending")):
+        # SCANNING AND WATCHING ARE ONE SCREEN. They were two, and the watching
+        # one said "tracking..." over an empty page, which tells a visitor
+        # nothing they cannot already see -- the robot is right there, holding
+        # still. The five frames answer the only question worth asking, WHICH WAY
+        # IS IT LOOKING, and they answer it continuously: the grid fills in as
+        # the head captures it, the red frame lands when the plan does, and it
+        # MOVES when the head is corrected. Which state it is in is a glance at
+        # the strip.
+        phase = "room"
     elif now == "S3_ACK":
         phase = "ack"
     else:
@@ -121,9 +134,20 @@ def booth_state(STATE, feed_records, sweep_meta):
         # what a state change is worth here: a glance, not a screen.
         phase = "choose"
 
+    # WHICH FRAME IS RED: the station nearest where it is ACTUALLY AIMED, not
+    # the one the sweep scored highest. They agree until the visitor taps the
+    # head -- and that tap is the whole point of the Correct beat, so the red
+    # frame has to move with it or the gesture has no answer on the tablet.
+    # Before an aim exists (mid-sweep), the sweep's own pick stands in.
     shots, chosen = [], None
     if sweep_meta:
-        chosen = sweep_meta.get("richest_pan")
+        aim = STATE.get("aimed_pan")
+        pans = [sh.get("pan") for sh in (sweep_meta.get("shots") or [])
+                if sh.get("pan") is not None]
+        if aim is not None and pans:
+            chosen = min(pans, key=lambda p: abs(p - float(aim)))
+        else:
+            chosen = sweep_meta.get("richest_pan")
         for sh in sweep_meta.get("shots") or []:
             shots.append({
                 "pan": sh.get("pan"),
@@ -287,22 +311,20 @@ function render(){
       <div class=sub>${esc(S.request_ja)}</div></div>
       <div class=grow style="align-items:center;justify-content:center">
       <div class=bar><span class=dot></span>うなずいています</div></div>`;
-  } else if(S.phase==='sweep'){
-    a.innerHTML=`<div><h1>部屋を見ています</h1>
-      <div class=sub>${S.chosen_pan==null?'5方向を撮って、いま考えています'
-        :'赤いところを見張ります'}</div></div>
-      <div class=grid>${cells()}</div>
-      <div class=bar>${S.seen.length?'見えたもの： '+S.seen.map(esc).join('・'):''}</div>`;
   } else {
-    a.innerHTML=`<div><h1>見張っています</h1>
+    // ONE SCREEN FOR SCANNING AND FOR WATCHING. The only question a visitor has
+    // in either is which way it is looking, and the grid answers it the whole
+    // time: cells fill as the head captures them, the red frame lands with the
+    // plan, and it moves when the head is corrected. "tracking..." over an empty
+    // page told them nothing the robot in front of them was not already saying.
+    const done = S.chosen_pan!=null;
+    a.innerHTML=`<div><h1>${done?'ここを見張っています':'部屋を見ています'}</h1>
       <div class=sub>${esc(S.request_ja)}</div></div>
-      <div class=grow><div class=bar><span class=dot></span>
-        ${S.noticed?S.noticed+' 件 見つけました':'まだ何も起きていません'}
-        ・ ちがう方を見てほしいときは頭をさわってください</div>
-        <div id=stories>`+S.stories.map(s=>
-          `<div class=story><img src="/thumb/${esc(s.thumb)}">
-             <div>${esc(s.note)}<span>${esc(s.time)}</span></div></div>`).join('')
-        +`</div></div>`;
+      <div class=grid>${cells()}</div>
+      <div class=bar>${done
+        ? (S.noticed? S.noticed+' 件 見つけました ・ ' : '')
+          + 'ちがう方を見てほしいときは、頭をさわってください'
+        : '<span class=dot></span>5方向を撮って、いま考えています'}</div>`;
   }
 }
 
