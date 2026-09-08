@@ -317,7 +317,7 @@ h1{font-weight:600;font-size:clamp(26px,3.4vh,40px);line-height:1.3;margin:0;let
    does: it is what makes waiting feel like being waited WITH. */
 .waitbox{flex:1;display:flex;flex-direction:column;align-items:center;
   justify-content:center;gap:22px}
-.wface{font-size:clamp(56px,9vw,120px);font-family:ui-monospace,monospace;
+.wface{font-size:clamp(28px,4.5vw,60px);font-family:ui-monospace,monospace;
   color:#cfe33a;animation:bob 2.2s ease-in-out infinite}
 @keyframes bob{0%,100%{transform:translateY(0)}50%{transform:translateY(-9px)}}
 .wtxt{font-size:clamp(19px,2.4vw,30px);color:#8a867d}
