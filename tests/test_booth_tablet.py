@@ -213,7 +213,44 @@ def test_the_wall_shows_the_most_recent_first():
             for i in range(9)]
     s = booth_state(_st(flow_state="S5B_TRACK"), recs, None)
     assert [r["note"] for r in s["stories"]][:3] == ["n8", "n7", "n6"]
-    assert len(s["stories"]) == 6, "a wall, not an archive"
+    assert s["n_stories"] == 9
+
+
+def test_the_count_is_what_tells_the_tablet_a_report_has_landed():
+    """After OK the tablet stops following the robot and waits. It cannot know a
+    story has been written without a number that changes -- the robot has
+    already gone back to watching, so its state says nothing about the report."""
+    before = booth_state(_st(flow_state="S7b"), [{"note": "a"}], None)
+    after = booth_state(_st(flow_state="S5B_TRACK"),
+                        [{"note": "a"}, {"note": "b"}], None)
+    assert after["n_stories"] > before["n_stories"]
+    assert after["stories"][0]["note"] == "b", "newest first"
+
+
+def test_the_tablet_leaves_the_robot_behind_after_ok():
+    """The robot returns to watching immediately, which is right -- it has a job.
+    The visitor is owed the report they just asked for, and it takes another
+    6-45 s to write. Following the robot back to the room grid threw that away
+    and made OK look like it had cancelled something."""
+    from webui.booth import PAGE
+    i = PAGE.index("async function ok(")
+    block = PAGE[i:i + 400]
+    assert "MODE='report'" in block
+    assert "WAIT_FROM=S.n_stories" in block, "wait for the NEXT story, not any"
+
+
+def test_a_new_prompt_does_not_cover_the_report_being_read():
+    """The robot re-enters S7 on the next finding. A prompt reappearing over the
+    report is the same interruption OK was pressed to end."""
+    from webui.booth import PAGE
+    i = PAGE.index("if(S.phase==='notice'")
+    assert "MODE===null" in PAGE[i:i + 120]
+
+
+def test_the_wall_is_reachable_from_the_screen_a_visitor_waits_on():
+    from webui.booth import PAGE
+    assert 'onpointerdown="wall()"' in PAGE
+    assert "function back()" in PAGE, "and a way out of it"
 
 
 # ------------------------------------------------------------ the routes --

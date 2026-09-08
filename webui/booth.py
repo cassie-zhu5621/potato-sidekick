@@ -33,7 +33,17 @@ can DO:
              nothing, which told a visitor less than the robot in front of them
              already was. The 5-20 s VLM wait becomes the part people point at.
     notice   the same prompt as the robot's own screen, either of which takes
-             the OK -- then the story.
+             the OK.
+    report   AFTER OK THE TABLET STOPS FOLLOWING THE ROBOT. The robot goes
+             straight back to watching -- right, it has a job -- but the visitor
+             is owed the report they just asked for, and the storyboard takes
+             another 6-45 s to narrate it. Following the robot back to the room
+             grid threw that away and made OK look like it had cancelled
+             something. The page waits here, on its own, until the story count
+             rises, then shows that one story.
+    wall     every story of the day, reachable from the choose screen -- which
+             is where a visitor stands with nothing to do, and where the next
+             one arrives.
 
 Polling, not sockets: 200 ms on a LAN is imperceptible and the codebase already
 polls. The study page's 1200 ms was too slow here -- the prompt has to land with
@@ -172,7 +182,13 @@ def booth_state(STATE, feed_records, sweep_meta):
         "chosen_pan": chosen,
         "describe": STATE.get("describe") or "",
         "noticed": STATE.get("noticed_n") or 0,
-        "stories": feed_records[-6:][::-1],
+        # THE WHOLE WALL, newest first, and a COUNT the page can compare
+        # against. After OK the tablet stops following the robot and waits for a
+        # story to appear -- it cannot know one has landed without a number that
+        # changes. The robot, meanwhile, has already gone back to watching; the
+        # two are doing different things on purpose from that moment.
+        "stories": feed_records[-40:][::-1],
+        "n_stories": len(feed_records),
         "seen": (STATE.get("seen") or [])[:8],
     }
 
@@ -254,11 +270,19 @@ h1{font-weight:600;font-size:clamp(26px,3.4vh,40px);line-height:1.3;margin:0;let
   padding:20px 0;width:100%;font-weight:700;font-size:23px}
 .ok:active{background:#cfe33a;color:#141414}
 
-.story{display:flex;gap:14px;align-items:center;background:#1d1d1a;
-  border-radius:16px;padding:12px;margin-bottom:10px}
-.story img{width:104px;height:66px;object-fit:cover;border-radius:9px;flex:none}
-.story div{font-size:15px;line-height:1.45;color:#d8d5cc}
-.story span{display:block;font:12px ui-monospace,monospace;color:#7a776f;margin-top:4px}
+.story{display:flex;gap:18px;align-items:center;background:#1d1d1a;
+  border-radius:18px;padding:16px;margin-bottom:12px}
+.story img{width:clamp(120px,17vw,220px);aspect-ratio:16/10;object-fit:cover;
+  border-radius:11px;flex:none;background:#101010}
+.story div{font-size:clamp(18px,2.3vw,30px);line-height:1.4;color:#e6e3da}
+.story span{display:block;font:13px ui-monospace,monospace;color:#7a776f;margin-top:6px}
+
+/* The way back to every story of the day. On the choose screen because that is
+   where a visitor stands with nothing to do, and where the next one arrives. */
+.wallbtn{flex:none;background:transparent;color:#8a867d;
+  border:2px solid #2f2f2a;border-radius:16px;padding:16px;
+  font-size:clamp(16px,2.1vw,24px);font-family:inherit}
+.wallbtn:active{border-color:#cfe33a;color:#cfe33a}
 #stories{overflow-y:auto;flex:1;-webkit-overflow-scrolling:touch}
 </style></head><body>
 <div id=strip></div>
@@ -270,6 +294,15 @@ h1{font-weight:600;font-size:clamp(26px,3.4vh,40px);line-height:1.3;margin:0;let
 <script>
 let S={phase:'choose'},sent=0;
 
+// THE TABLET STOPS FOLLOWING THE ROBOT AFTER OK. The robot goes straight back
+// to watching -- that is right, it has a job -- but the visitor is owed the
+// report they just asked for, and it takes another 6-45 s to write. Sending the
+// tablet back to the room grid with it threw that away and looked like the OK
+// had cancelled something. MODE overrides `phase` while it is set; null means
+// follow the robot again.
+let MODE=null;        // null | 'report' | 'wall'
+let WAIT_FROM=0;      // how many stories existed when OK was pressed
+
 async function pick(id){
   if(Date.now()-sent<1500) return; sent=Date.now();
   await fetch('/booth/choose',{method:'POST',body:id});
@@ -277,8 +310,12 @@ async function pick(id){
 async function ok(){
   if(Date.now()-sent<800) return; sent=Date.now();
   document.getElementById('veil').classList.remove('on');
+  WAIT_FROM=S.n_stories||0; MODE='report';        // wait for the NEXT one
+  render();
   await fetch('/booth/ok',{method:'POST'});
 }
+function wall(){MODE='wall';render();}
+function back(){MODE=null;render();}
 const esc=s=>String(s==null?'':s).replace(/[<>&]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
 
 function cells(){
@@ -301,15 +338,39 @@ function strip(){
   ).join('');
 }
 
+function story1(s){
+  return `<div class=story><img src="/thumb/${esc(s.thumb)}">
+     <div>${esc(s.note)}<span>${esc(s.time)}</span></div></div>`;
+}
+
 function render(){
   strip();
   const a=document.getElementById('app');
+  if(MODE==='wall'){
+    a.innerHTML=`<div><h1>これまでに気づいたこと</h1>
+      <div class=sub>${(S.stories||[]).length} 件</div></div>
+      <div id=stories>`+(S.stories||[]).map(story1).join('')
+      +`</div><button class=ok onpointerdown="back()">もどる</button>`;
+    return;
+  }
+  if(MODE==='report'){
+    const fresh=(S.n_stories||0)>WAIT_FROM ? S.stories[0] : null;
+    a.innerHTML=`<div><h1>${fresh?'これを見つけました':'まとめています'}</h1>
+      <div class=sub>${esc(S.request_ja)}</div></div>
+      <div class=grow>`+(fresh
+        ? story1(fresh)+`<button class=ok onpointerdown="back()">とじる</button>`
+        : `<div class=bar style="justify-content:center;flex:1">
+             <span class=dot></span>しばらくお待ちください</div>`)+`</div>`;
+    return;
+  }
   if(S.phase==='choose'){
     a.innerHTML=`<div><h1>なにを見ていてほしい？</h1>
       <div class=sub>ポテトの頭にさわると、起きます</div></div>
       <div class=grow style="gap:18px">`+S.choices.map(c=>
         `<div class=card onpointerdown="pick('${c.id}')">${esc(c.ja)}
-           <small>${esc(c.sub)}</small></div>`).join('')+`</div>`;
+           <small>${esc(c.sub)}</small></div>`).join('')
+      +`</div><button class=wallbtn onpointerdown="wall()">
+          これまでに気づいたこと（${S.n_stories||0}）</button>`;
   } else if(S.phase==='ack'){
     a.innerHTML=`<div><h1>わかりました</h1>
       <div class=sub>${esc(S.request_ja)}</div></div>
@@ -340,7 +401,10 @@ async function poll(){
     S=n;
     if(changed) render();
     const veil=document.getElementById('veil');
-    if(S.phase==='notice'){
+    // NOT while the tablet is on a report or the wall. The robot re-enters S7
+    // on the NEXT finding, and a prompt reappearing over the report the visitor
+    // is still reading is the same interruption OK was meant to end.
+    if(S.phase==='notice' && MODE===null){
       document.getElementById('pd').textContent=S.describe||'';
       veil.classList.add('on');
     } else veil.classList.remove('on');
