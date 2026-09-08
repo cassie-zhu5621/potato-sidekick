@@ -61,6 +61,53 @@ def test_an_id_we_did_not_write_installs_nothing():
     assert english_for(None) is None
 
 
+def test_waking_it_does_not_take_the_choice_away():
+    """The visitor touches the head, the robot lifts it, and the next thing they
+    have to do is pick a task. Mapping S2_LISTEN to its own screen removed both
+    buttons at exactly that moment."""
+    assert booth_state(_st(flow_state="S2_LISTEN"), [], None)["phase"] == "choose"
+
+
+def test_the_strip_says_the_state_instead():
+    """A state change is worth a glance, not a screen."""
+    from webui.booth import FACES, face_key
+    s = booth_state(_st(flow_state="S2_LISTEN"), [], None)
+    assert s["face"] == "S2_LISTEN"
+    assert s["phase"] == "choose", "the strip changes, the page does not"
+    assert [f[0] for f in s["faces"]][0] == "S1_IDLE"
+
+
+def test_the_faces_are_the_robots_own():
+    """Copied from the firmware's uiFace(). Two surfaces, one vocabulary -- a
+    visitor looking from the tablet to the robot sees the same thing twice
+    rather than having to learn a second code."""
+    from webui.booth import FACES
+    ino = open(os.path.join(ROOT, "robot", "firmware", "cores3_sidekick",
+                            "cores3_sidekick.ino")).read()
+    for state, face, _label in FACES:
+        if state == "S4_PLAN":
+            continue          # planning wears no face on the robot, by design
+        # The .ino is C: a backslash in the face is written doubled there. What
+        # has to match is what the two screens DISPLAY, not how each language
+        # spells it.
+        as_c = face.replace("\\", "\\\\")
+        assert f'"{as_c}"' in ino, f"{state}: {face} is not what the board shows"
+
+
+def test_every_state_lights_exactly_one_lamp():
+    from webui.booth import FACES, face_key
+    keys = {k for k, _f, _l in FACES}
+    for state in ("S1_IDLE", "S2_LISTEN", "S3_ACK", "S4_PLAN", "S5A_SETTLE",
+                  "S5B_TRACK", "S6_FINETUNE", "S7a", "S7b", "S8_ERROR", ""):
+        assert face_key(state) in keys, state
+
+
+def test_the_choice_is_set_large_enough_to_read_standing_up():
+    from webui.booth import PAGE
+    assert "clamp(40px,min(7.6vw,8.4vh),104px)" in PAGE
+    assert "text-align:center" in PAGE
+
+
 # ------------------------------------------------------------ the sweep --
 def test_the_chosen_station_is_marked_and_the_rest_are_not():
     meta = {"dir": "20260817_181729", "richest_pan": -60,

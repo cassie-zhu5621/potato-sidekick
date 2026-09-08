@@ -55,6 +55,33 @@ CHOICES = [
 
 _EN = {c["id"]: c["en"] for c in CHOICES}
 
+# THE ROBOT'S OWN FACES, copied from the firmware's uiFace(). Deliberately the
+# same characters: the strip on the tablet and the face on the robot are then
+# one vocabulary rather than two, and a visitor who looks from one to the other
+# sees the same thing twice instead of having to learn a second code.
+#
+# S4 has no face on the robot -- planning is the one screen whose job is to send
+# the eye to the room instead of the screen -- so the strip shows a looking mark
+# rather than inventing an expression the robot does not wear.
+FACES = [
+    ("S1_IDLE",     "-_-",    "ねてる"),
+    ("S2_LISTEN",   "._.",    "きづいた"),
+    ("S3_ACK",      "^o^",    "わかった"),
+    ("S4_PLAN",     "\u30fb\u30fb\u30fb",    "みてる"),
+    ("S5B_TRACK",   "o_o",    "みはり"),
+    ("S6_FINETUNE", ">_<",    "ちがう"),
+    ("S7b",         "\\^o^/", "よんでる"),
+]
+
+# states that light the same lamp
+_FACE_OF = {"S5A_SETTLE": "S5B_TRACK", "S7a": "S7b", "S8_ERROR": "S6_FINETUNE"}
+
+
+def face_key(state):
+    """Which lamp in the strip is lit for this state."""
+    state = _FACE_OF.get(state, state)
+    return state if any(k == state for k, _f, _l in FACES) else "S1_IDLE"
+
 
 def english_for(choice_id):
     """The sentence the planner is given. None for an id we did not write."""
@@ -83,9 +110,15 @@ def booth_state(STATE, feed_records, sweep_meta):
         phase = "sweep"
     elif now in ("S5A_SETTLE", "S5B_TRACK", "S6_FINETUNE"):
         phase = "watch"
-    elif now in ("S2_LISTEN", "S3_ACK"):
+    elif now == "S3_ACK":
         phase = "ack"
     else:
+        # S2_LISTEN LANDS HERE ON PURPOSE. That is the robot lifting its head
+        # because the visitor touched it, and the next thing they have to do is
+        # pick a task -- so the choice must still be on the screen. Sending them
+        # to a "woken" screen took the two buttons away at the exact moment they
+        # were needed. The state is shown by the face strip instead, which is
+        # what a state change is worth here: a glance, not a screen.
         phase = "choose"
 
     shots, chosen = [], None
@@ -107,6 +140,8 @@ def booth_state(STATE, feed_records, sweep_meta):
     return {
         "phase": phase,
         "state": now,
+        "faces": FACES,
+        "face": face_key(now),
         "choices": CHOICES,
         "request_ja": STATE.get("booth_choice_ja") or "",
         "shots": shots,
@@ -123,10 +158,22 @@ PAGE = """<!doctype html><html lang=ja><head><meta charset=utf-8>
 <meta name=apple-mobile-web-app-capable content=yes>
 <title>ポテト</title><style>
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-body{margin:0;background:#141414;color:#f2f0ea;
+body{margin:0;background:#141414;color:#f2f0ea;display:flex;flex-direction:column;
   font-family:-apple-system,"Hiragino Sans","Noto Sans JP",sans-serif;
   height:100vh;overflow:hidden;user-select:none}
-#app{height:100%;display:flex;flex-direction:column;padding:28px;gap:20px}
+#app{height:100%;display:flex;flex-direction:column;padding:20px 28px 28px;gap:16px}
+
+/* THE STATE STRIP. Small, at the top, always there. A state change is worth a
+   glance, not a screen -- swapping the whole page when the robot lifts its head
+   took the two task buttons away at the moment the visitor needed them. */
+#strip{display:flex;gap:8px;justify-content:center;flex:none;padding:14px 0 0}
+#app{flex:1;min-height:0}
+.f{font:14px ui-monospace,monospace;color:#3f3f3a;background:#1a1a17;
+  border-radius:9px;padding:5px 10px;letter-spacing:.06em;
+  transition:color .18s,background .18s}
+.f.on{color:#141414;background:#cfe33a;font-weight:700}
+.f b{display:block;font:400 9px inherit;letter-spacing:0;opacity:.55;
+  margin-top:1px}
 h1{font:600 clamp(26px,3.4vh,40px)/1.3 inherit;margin:0;letter-spacing:.02em}
 .sub{font:clamp(15px,1.9vh,21px) inherit;color:#8a867d;margin-top:8px}
 .grow{flex:1;min-height:0;display:flex;flex-direction:column;gap:18px}
@@ -137,13 +184,13 @@ h1{font:600 clamp(26px,3.4vh,40px)/1.3 inherit;margin:0;letter-spacing:.02em}
    touch target rather than the text inside it. clamp() keeps it right on an
    iPad mini and a 12.9 alike without a media query. */
 .card{background:#1d1d1a;border:3px solid #33332e;border-radius:28px;
-  padding:34px;color:#f2f0ea;text-align:center;
-  font:700 clamp(30px,4.4vh,52px)/1.35 inherit;letter-spacing:.01em;
+  padding:20px;color:#f2f0ea;text-align:center;
+  font:700 clamp(40px,min(7.6vw,8.4vh),104px)/1.28 inherit;letter-spacing:.01em;
   flex:1;display:flex;flex-direction:column;align-items:center;
-  justify-content:center;gap:16px}
+  justify-content:center;gap:14px}
 .card:active{background:#cfe33a;color:#141414;border-color:#cfe33a;
   transform:scale(.985)}
-.card small{font:400 clamp(15px,2vh,22px) inherit;color:#8a867d}
+.card small{font:400 clamp(15px,2.1vh,26px) inherit;color:#8a867d}
 .card:active small{color:#3a3a20}
 
 .grid{flex:1;display:grid;grid-template-columns:repeat(3,1fr);gap:12px;min-height:0}
@@ -179,6 +226,7 @@ h1{font:600 clamp(26px,3.4vh,40px)/1.3 inherit;margin:0;letter-spacing:.02em}
 .story span{display:block;font:12px ui-monospace,monospace;color:#7a776f;margin-top:4px}
 #stories{overflow-y:auto;flex:1;-webkit-overflow-scrolling:touch}
 </style></head><body>
+<div id=strip></div>
 <div id=app></div>
 <div id=veil><div class=pop>
   <h2 id=pt>気づきました</h2><p id=pd></p>
@@ -211,12 +259,19 @@ function cells(){
   return out.join('');
 }
 
+function strip(){
+  document.getElementById('strip').innerHTML=(S.faces||[]).map(
+    ([k,f,l])=>`<div class="f${k===S.face?' on':''}">${esc(f)}<b>${esc(l)}</b></div>`
+  ).join('');
+}
+
 function render(){
+  strip();
   const a=document.getElementById('app');
   if(S.phase==='choose'){
     a.innerHTML=`<div><h1>なにを見ていてほしい？</h1>
       <div class=sub>ポテトの頭にさわると、起きます</div></div>
-      <div class=grow style="gap:22px">`+S.choices.map(c=>
+      <div class=grow style="gap:18px">`+S.choices.map(c=>
         `<div class=card onpointerdown="pick('${c.id}')">${esc(c.ja)}
            <small>${esc(c.sub)}</small></div>`).join('')+`</div>`;
   } else if(S.phase==='ack'){
