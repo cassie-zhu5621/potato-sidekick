@@ -247,10 +247,47 @@ def test_a_new_prompt_does_not_cover_the_report_being_read():
     assert "MODE===null" in PAGE[i:i + 120]
 
 
-def test_the_wall_is_reachable_from_the_screen_a_visitor_waits_on():
+def test_the_wall_is_a_chip_in_the_top_row_not_a_button_in_the_way():
+    """It is a way out, not an offer. At the size of a state face, in the top
+    corner, it cannot compete with the two things a visitor is actually being
+    asked to choose between."""
     from webui.booth import PAGE
+    assert 'class="f wallbtn" id=wb' in PAGE
     assert 'onpointerdown="wall()"' in PAGE
     assert "function back()" in PAGE, "and a way out of it"
+    assert "これまでに気づいたこと（" not in PAGE, "the full-width button is gone"
+
+
+def test_a_story_is_the_wide_strip_not_a_thumbnail():
+    """The storyboard composites its panels into one wide jpg -- that IS the
+    shape of a finding, several moments in a row. The thumbnail is one squashed
+    copy and loses the thing that makes a story a story: that it went on."""
+    from webui.booth import PAGE
+    i = PAGE.index("function story1(")
+    block = PAGE[i:i + 600]
+    assert "/frame/" in block
+    # thumb appears only as the fallback inside the same expression
+    assert block.index("/frame/") < block.index("s.thumb")
+    assert "class=pan" in block, "scrolled sideways, not squeezed"
+
+
+def test_the_strip_scrolls_sideways_at_full_height():
+    import re
+    from webui.booth import PAGE
+    css = re.sub(r"/\*.*?\*/", "", PAGE, flags=re.S)
+    pan = re.search(r"\.pan\{[^}]*\}", css).group(0)
+    assert "overflow-x:auto" in pan
+    img = re.search(r"\.pan img\{[^}]*\}", css).group(0)
+    assert "width:auto" in img, "let it be as wide as it is"
+
+
+def test_the_exhibition_does_not_re_sweep_on_its_own():
+    """A self-directed sweep is a good beat in a 15-minute session. At a stand it
+    lands in the middle of a stranger's ninety seconds and the head swings off
+    the thing they just asked it to watch."""
+    import robot.states as ST
+    assert ST.REPLAN_PERIOD_S == 0.0
+    assert ST.REPLAN_IDLE_S == 0.0
 
 
 # ------------------------------------------------------------ the routes --

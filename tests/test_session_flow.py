@@ -435,21 +435,33 @@ expect(f.state == "S5B_TRACK",
        f"REPLAN_IDLE_S={ST.REPLAN_IDLE_S:.0f} -> "
        f"{(ST.REPLAN_PERIOD_S-60)/60:.0f} min of quiet alone never re-sweeps")
 
-# The PERIOD one is deliberately still on: one self-directed sweep per session
-# is the only evidence the robot has any initiative, and 540 s places it in the
-# 8-10 minute gap between the scripted events.
+# THE PERIODIC ONE IS A PER-BRANCH DECISION, so the test asks the constant
+# rather than hard-coding one branch's answer.
+#
+# Study (540 s): one self-directed sweep per session is the only evidence the
+# robot has any initiative, and 540 places it in the 8-10 minute gap between the
+# scripted events.
+# Exhibition (0): the same sweep lands in the middle of a stranger's ninety
+# seconds, and the head swinging off the thing they just asked it to watch reads
+# as a fault. Every visitor re-plans anyway.
 f = flow()
 run(f, ["ptt_down", "ptt_up", "transcript:watch the plant",
         "arrived:S4_PLAN", "arrived:S5B_TRACK", "planned"], "")
-CLOCK[0] += ST.REPLAN_PERIOD_S - 30
-f.feed("tick")
-expect(f.state == "S5B_TRACK", "8:30 into the session -- still watching")
-CLOCK[0] += 60
-out = f.feed("tick")
-expect(f.state == "S4_PLAN",
-       f"at {ST.REPLAN_PERIOD_S/60:.0f} min it goes and looks again, once")
-expect(("plan", "watch the plant") in out,
-       "...on the request already on record, not a new one")
+if ST.REPLAN_PERIOD_S:
+    CLOCK[0] += ST.REPLAN_PERIOD_S - 30
+    f.feed("tick")
+    expect(f.state == "S5B_TRACK", "just before the period -- still watching")
+    CLOCK[0] += 60
+    out = f.feed("tick")
+    expect(f.state == "S4_PLAN",
+           f"at {ST.REPLAN_PERIOD_S/60:.0f} min it goes and looks again, once")
+    expect(("plan", "watch the plant") in out,
+           "...on the request already on record, not a new one")
+else:
+    CLOCK[0] += 3600
+    f.feed("tick")
+    expect(f.state == "S5B_TRACK",
+           "REPLAN_PERIOD_S=0 -> an hour of quiet never re-sweeps on its own")
 
 print("\n--- transcript_usable thresholds ---")
 for text, want in [("find the blue mug", True), ("", False), ("hm", False),

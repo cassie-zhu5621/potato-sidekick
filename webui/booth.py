@@ -205,7 +205,11 @@ body{margin:0;background:#141414;color:#f2f0ea;display:flex;flex-direction:colum
 /* THE STATE STRIP. Small, at the top, always there. A state change is worth a
    glance, not a screen -- swapping the whole page when the robot lifts its head
    took the two task buttons away at the moment the visitor needed them. */
-#strip{display:flex;gap:8px;justify-content:center;flex:none;padding:14px 0 0}
+/* Faces centred, the way into the day's stories on the right. Same height as
+   a face chip: it is a way out, not an offer, and it must not compete with the
+   two things a visitor is actually being asked to choose between. */
+#top{display:flex;align-items:center;flex:none;padding:14px 20px 0;gap:8px}
+#strip{display:flex;gap:8px;justify-content:center;flex:1}
 /* ONE rule for #app, not two. It carried height:100% AND flex:1 at the same
    time, so with the strip above it the page ran past the viewport and the
    bottom -- the grid, the buttons -- was clipped away under overflow:hidden. */
@@ -270,22 +274,28 @@ h1{font-weight:600;font-size:clamp(26px,3.4vh,40px);line-height:1.3;margin:0;let
   padding:20px 0;width:100%;font-weight:700;font-size:23px}
 .ok:active{background:#cfe33a;color:#141414}
 
-.story{display:flex;gap:18px;align-items:center;background:#1d1d1a;
-  border-radius:18px;padding:16px;margin-bottom:12px}
-.story img{width:clamp(120px,17vw,220px);aspect-ratio:16/10;object-fit:cover;
-  border-radius:11px;flex:none;background:#101010}
-.story div{font-size:clamp(18px,2.3vw,30px);line-height:1.4;color:#e6e3da}
-.story span{display:block;font:13px ui-monospace,monospace;color:#7a776f;margin-top:6px}
+/* A STORY IS THE STRIP ITSELF. The storyboard composites its panels into one
+   wide jpg -- that IS the shape of the finding, several moments in a row -- so
+   it is shown at full height and scrolled sideways rather than squeezed into a
+   thumbnail. The sentence sits under the picture, where a caption goes. */
+.story{background:#1d1d1a;border-radius:18px;padding:14px;margin-bottom:14px}
+.pan{overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch;
+  border-radius:12px;background:#101010;scrollbar-width:none}
+.pan::-webkit-scrollbar{display:none}
+.pan img{height:clamp(150px,26vh,340px);width:auto;max-width:none;display:block}
+.story p{margin:14px 4px 2px;font-size:clamp(19px,2.4vw,32px);line-height:1.4;
+  color:#e6e3da}
+.story span{display:block;margin:6px 4px 0;color:#7a776f;
+  font:13px ui-monospace,monospace}
+.swipe{font-size:12px;color:#54544c;margin:6px 4px 0;
+  font-family:ui-monospace,monospace}
 
-/* The way back to every story of the day. On the choose screen because that is
-   where a visitor stands with nothing to do, and where the next one arrives. */
-.wallbtn{flex:none;background:transparent;color:#8a867d;
-  border:2px solid #2f2f2a;border-radius:16px;padding:16px;
-  font-size:clamp(16px,2.1vw,24px);font-family:inherit}
-.wallbtn:active{border-color:#cfe33a;color:#cfe33a}
+.wallbtn{flex:none;cursor:pointer}
+.wallbtn:active{color:#141414;background:#cfe33a}
 #stories{overflow-y:auto;flex:1;-webkit-overflow-scrolling:touch}
 </style></head><body>
-<div id=strip></div>
+<div id=top><div id=strip></div>
+  <div class="f wallbtn" id=wb onpointerdown="wall()"></div></div>
 <div id=app></div>
 <div id=veil><div class=pop>
   <h2 id=pt>気づきました</h2><p id=pd></p>
@@ -336,11 +346,20 @@ function strip(){
   document.getElementById('strip').innerHTML=(S.faces||[]).map(
     ([k,f,l])=>`<div class="f${k===S.face?' on':''}">${esc(f)}<b>${esc(l)}</b></div>`
   ).join('');
+  const w=document.getElementById('wb');
+  w.innerHTML=`\u2630 ${S.n_stories||0}<b>きろく</b>`;
+  w.style.visibility = MODE==='wall' ? 'hidden' : 'visible';
 }
 
 function story1(s){
-  return `<div class=story><img src="/thumb/${esc(s.thumb)}">
-     <div>${esc(s.note)}<span>${esc(s.time)}</span></div></div>`;
+  // /frame/ not /thumb/: the frame IS the strip, several panels wide. The
+  // thumbnail is one squashed copy of it and loses the thing that makes a
+  // story a story -- that it went on.
+  const wide=(s.shots||1)>1;
+  return `<div class=story>
+    <div class=pan><img src="/frame/${esc(s.frame||s.thumb)}"></div>
+    ${wide?'<div class=swipe>\u2190 よこにスワイプ</div>':''}
+    <p>${esc(s.note)}</p><span>${esc(s.time)}</span></div>`;
 }
 
 function render(){
@@ -368,9 +387,7 @@ function render(){
       <div class=sub>ポテトの頭にさわると、起きます</div></div>
       <div class=grow style="gap:18px">`+S.choices.map(c=>
         `<div class=card onpointerdown="pick('${c.id}')">${esc(c.ja)}
-           <small>${esc(c.sub)}</small></div>`).join('')
-      +`</div><button class=wallbtn onpointerdown="wall()">
-          これまでに気づいたこと（${S.n_stories||0}）</button>`;
+           <small>${esc(c.sub)}</small></div>`).join('')+`</div>`;
   } else if(S.phase==='ack'){
     a.innerHTML=`<div><h1>わかりました</h1>
       <div class=sub>${esc(S.request_ja)}</div></div>

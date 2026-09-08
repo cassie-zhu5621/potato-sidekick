@@ -466,7 +466,17 @@ REJECTED_COOLDOWN_S = 4.0
 # is to stop it re-firing on every frame until the gate clears.
 SUPPRESSED_RETRY_S = 2.0
 
-REPLAN_PERIOD_S = 540.0  # ONE self-directed sweep per session, placed on purpose.
+REPLAN_PERIOD_S = 0.0    # OFF ON THE EXHIBITION BRANCH. Was 540 for the study.
+                         #
+                         # A self-directed sweep is a good beat in a 15-minute
+                         # session: it is the one moment the robot acts on its
+                         # own. At a stand it lands in the middle of a stranger's
+                         # ninety seconds, and the head swinging away from the
+                         # thing they just asked it to watch reads as a fault.
+                         # Every visitor's choice re-plans anyway, so the room
+                         # model is never more than one visitor old.
+                         #
+                         # ONE self-directed sweep per session, placed on purpose.
                          #
                          # This is the only moment the robot acts on its own
                          # initiative rather than on a request or a detection --
