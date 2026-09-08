@@ -167,17 +167,48 @@ def test_no_font_shorthand_ending_in_inherit():
     assert not bad, bad
 
 
-def test_the_player_drops_a_stale_override_when_a_clip_is_cut_short():
-    """arm_next overrides the NEXT `then`. An interrupted clip never reaches a
-    `then`, so the arming is stale -- and it then hijacked the next transition.
-    The head tap arms S1_IDLE and plays S2; the visitor picks a task while S2 is
-    still running; S3_ACK finishes and goes to S1_IDLE instead of S4_PLAN. The
-    robot nodded and went back to sleep, and the sweep never happened."""
-    src = open(os.path.join(ROOT, "robot", "clip_player.py")).read()
-    i = src.index("completed = self._play_once(frames)")
-    block = src[i:i + 1400]
-    assert "self._next_override = None" in block
-    assert block.index("self._next_override = None") < block.index("break")
+def test_an_override_belongs_to_the_clip_that_was_playing_when_it_was_armed():
+    """Both directions of this were bugs on 2026-08-18, and they pull opposite
+    ways -- which is why the rule is about ORDER, not about interruption.
+
+    Stale override left alive: the head tap arms S1_IDLE and plays S2, the
+    visitor picks a task while S2 is still running, S2 is cut short, and
+    S3_ACK's `then` (S4_PLAN) is replaced by S1_IDLE. Nod, sleep, no sweep.
+
+    Cleared on the interrupt instead: OK arms S5B_TRACK and requests S3_ACK,
+    that request interrupts S7b, and the arming meant for S3_ACK is wiped a
+    microsecond after it was made -- S3_ACK falls back to S4_PLAN and the robot
+    re-scans. Reported as "OK still goes back to scan".
+
+    Only the caller knows which clip an override was for, and it says so by
+    calling request() first and arm_next() second.
+    """
+    import inspect
+    from robot.clip_player import ClipPlayer
+    src = inspect.getsource(ClipPlayer.request)
+    assert "self._next_override = None" in src
+
+    play = open(os.path.join(ROOT, "robot", "clip_player.py")).read()
+    i = play.index("completed = self._play_once(frames)")
+    assert "_next_override" not in play[i:i + 400], "not on the interrupt path"
+
+
+def test_every_caller_requests_first_and_arms_second():
+    src = open(os.path.join(ROOT, "noticebot_loop.py")).read()
+    for a, b in [('player.request("S3_ACK")', 'player.arm_next("S1_IDLE")'),
+                 ('player.request("S2_LISTEN")', 'player.arm_next("S1_IDLE")')]:
+        i = src.index(a)
+        assert b in src[i:i + 200], f"{a} must be followed by {b}"
+
+
+def test_ok_emits_the_state_before_the_arming():
+    """The loop turns ("state", X) into player.request(X), which clears any
+    pending override -- so the arming has to be emitted on the far side of it."""
+    import session.session_flow as F
+    f = F.SessionFlow(now=lambda: 0.0)
+    f.state, f.transcript = "S7b", "x"
+    kinds = [k for k, _ in f.feed("ok")]
+    assert kinds.index("state") < kinds.index("ack_then")
 
 
 # ------------------------------------------------------------ the sweep --
@@ -195,6 +226,46 @@ def test_the_chosen_station_is_marked_and_the_rest_are_not():
 def test_no_sweep_yet_is_empty_not_broken():
     s = booth_state(_st(flow_state="S4_PLAN"), [], None)
     assert s["shots"] == [] and s["chosen_pan"] is None
+
+
+def test_the_sixth_cell_shows_the_rule_in_the_developer_pages_words():
+    """Five stations in a 3x2 grid leave one cell empty, and what belongs there
+    is the condition. A visitor who can read hands-on + bag knows what to DO --
+    which at a stand is the difference between a demo that gets triggered and
+    one that does not."""
+    from webui.booth import REL_NAMES
+    import webui.server as WS
+    st = _st(flow_state="S5B_TRACK", status=[{
+        "label": "touching the bag", "onobj": "bag",
+        "all": [9], "any": [], "not": [], "then": [],
+        "sat": True, "cool": False, "on": {"9": True}}])
+    w = booth_state(st, [], None)
+    assert w["watch"][0]["on"] == "bag"
+    assert w["watch"][0]["all"] == [9]
+    assert w["watch"][0]["truth"]["9"] is True
+    # the same ids the developer page names, so the two cannot drift
+    assert set(REL_NAMES) == set(WS.REL_NAMES)
+    assert REL_NAMES[9].startswith("hands")
+
+
+def test_it_reads_the_same_fields_the_live_panel_does():
+    """build_status is the one place an entry becomes a row. Deriving these
+    from the spec separately would give the tablet its own opinion of what is
+    satisfied."""
+    from webui.booth import PAGE
+    i = PAGE.index("function specCell(")
+    block = PAGE[i:i + 900]
+    for k in ("w.all", "w.any", "w.then", "w.truth", "w.on", "w.sat"):
+        assert k in block, k
+    assert "THEN" in block and "AND" in block and "OR" in block
+
+
+def test_the_grid_has_six_cells_and_the_last_is_the_rule():
+    from webui.booth import PAGE
+    i = PAGE.index("function cells(")
+    block = PAGE[i:i + 700]
+    assert "i<5" in block, "five stations"
+    assert "out.push(specCell())" in block, "and the rule in the sixth"
 
 
 # ------------------------------------------------------------ the notice --

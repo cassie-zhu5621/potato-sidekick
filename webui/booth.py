@@ -71,6 +71,15 @@ CHOICES = [
 
 _EN = {c["id"]: c["en"] for c in CHOICES}
 
+# The relation vocabulary, short. Same ids and same words the developer page
+# uses (webui.server.REL_NAMES); English on purpose -- these are the system's
+# own terms and an onlooker reading over a visitor's shoulder is usually the
+# person who wants to see them.
+REL_NAMES = {
+    1: "gaze", 2: "joint", 3: "eye", 4: "point", 5: "prox", 6: "F-form",
+    7: "appr", 8: "lean", 9: "hands-on", 10: "gather", 11: "turn",
+}
+
 # THE ROBOT'S OWN FACES, copied from the firmware's uiFace(). Deliberately the
 # same characters: the strip on the tablet and the face on the robot are then
 # one vocabulary rather than two, and a visitor who looks from one to the other
@@ -180,6 +189,20 @@ def booth_state(STATE, feed_records, sweep_meta):
         "request_ja": STATE.get("booth_choice_ja") or "",
         "shots": shots,
         "chosen_pan": chosen,
+        # THE WATCH-SPEC, in the developer page's own vocabulary. The grid has
+        # five stations in six cells, and the empty one is where "what would
+        # make it call you" belongs: a visitor who can read hands-on + bag knows
+        # what to DO, and an onlooker can see the system is running a rule
+        # rather than a guess. Same fields the LIVE panel renders from -- see
+        # webui.server.build_status -- so the two cannot drift.
+        "watch": [{"label": r.get("label") or "",
+                   "on": r.get("onobj") or "",
+                   "all": r.get("all") or [], "any": r.get("any") or [],
+                   "not": r.get("not") or [], "then": r.get("then") or [],
+                   "sat": bool(r.get("sat")), "cool": bool(r.get("cool")),
+                   "truth": r.get("on") or {}}
+                  for r in (STATE.get("status") or [])],
+        "rel_names": REL_NAMES,
         "describe": STATE.get("describe") or "",
         "noticed": STATE.get("noticed_n") or 0,
         # THE WHOLE WALL, newest first, and a COUNT the page can compare
@@ -258,6 +281,24 @@ h1{font-weight:600;font-size:clamp(26px,3.4vh,40px);line-height:1.3;margin:0;let
   color:#cfe33a;background:rgba(20,20,20,.72);padding:2px 7px;border-radius:7px}
 .cell.wait{border-style:dashed;color:#54544c;font:22px ui-monospace,monospace}
 
+/* THE SIXTH CELL. Five stations in a 3x2 grid leave one empty, and what belongs
+   there is the rule -- a visitor who can read hands-on + bag knows what to DO,
+   and an onlooker can see the system is running a condition rather than
+   guessing. Same fields and same words as the developer page's LIVE panel. */
+.spec{border-style:solid;border-color:#2a2a27;background:#161614;
+  flex-direction:column;justify-content:center;gap:9px;padding:12px;
+  font-family:ui-monospace,monospace}
+.spec .lb{font-size:clamp(12px,1.25vw,17px);color:#6f6c65;letter-spacing:.08em}
+.spec .row{display:flex;flex-wrap:wrap;gap:5px;align-items:center;
+  justify-content:center}
+.rel{font-size:clamp(12px,1.3vw,18px);padding:4px 9px;border-radius:10px;
+  border:1px solid #3a3a35;color:#7c796f}
+.rel.t{background:#88e4ea;border-color:#88e4ea;color:#101010;font-weight:700}
+.op{font-size:clamp(11px,1.1vw,15px);color:#55524b}
+.obj{font-size:clamp(12px,1.3vw,18px);padding:4px 9px;border-radius:10px;
+  background:#1c1c19;border:1px solid #3a3a35;color:#cfe33a}
+.spec.sat{border-color:#d95b5b;background:#201616}
+
 .bar{font-size:15px;color:#8a867d;display:flex;gap:14px;align-items:center}
 .dot{width:11px;height:11px;border-radius:50%;background:#cfe33a;
   animation:p 1.4s ease-in-out infinite}
@@ -328,6 +369,21 @@ function wall(){MODE='wall';render();}
 function back(){MODE=null;render();}
 const esc=s=>String(s==null?'':s).replace(/[<>&]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
 
+function specCell(){
+  const w=(S.watch||[])[0];
+  if(!w) return '<div class="cell spec"><span class=lb>NO RULE YET</span></div>';
+  const ids=[...w.all,...w.any,...w.then];
+  const op = w.then.length ? 'THEN' : (w.any.length && !w.all.length ? 'OR' : 'AND');
+  const chips=ids.map((id,k)=>
+    (k?`<span class=op>${op}</span>`:'')+
+    `<span class="rel${w.truth[String(id)]?' t':''}">${esc(S.rel_names[id]||id)}</span>`
+  ).join('');
+  return `<div class="cell spec${w.sat?' sat':''}">
+    <span class=lb>${w.sat?'いま成立':'これを待っています'}</span>
+    <div class=row>${chips}${w.on?`<span class=op>on</span>
+      <span class=obj>${esc(w.on)}</span>`:''}</div></div>`;
+}
+
 function cells(){
   const out=[];
   for(let i=0;i<5;i++){
@@ -339,6 +395,7 @@ function cells(){
       <img src="/sweepimg/${esc(sh.dir)}/${esc(sh.file)}">
       <span class=tag>${sh.pan>0?'+':''}${sh.pan}°</span></div>`);
   }
+  out.push(specCell());       // the sixth cell of the 3x2 grid
   return out.join('');
 }
 

@@ -429,11 +429,29 @@ class ClipPlayer:
             self._next_override = state
 
     def request(self, state):
-        """Ask for a state. Takes effect within a frame; interrupts a clip."""
+        """Ask for a state. Takes effect within a frame; interrupts a clip.
+
+        CLEARS ANY PENDING `arm_next`, so ARM AFTER YOU REQUEST, never before.
+        An override belongs to the clip that was playing when it was armed; a
+        request replaces that clip, so the override has nothing left to steer and
+        must not be allowed to hijack whatever comes next.
+
+        Both halves of this were bugs on 2026-08-18. Leaving a stale override
+        alive: the head tap arms S1_IDLE and plays S2, the visitor picks a task
+        while S2 is still running, S2 is cut short, and S3_ACK's `then` (S4_PLAN)
+        is replaced by S1_IDLE -- nod, sleep, no sweep. Clearing it on the
+        INTERRUPT instead: OK arms S5B_TRACK and then requests S3_ACK, the
+        request interrupts S7b, and the arming meant for S3_ACK is wiped a
+        microsecond after it was made -- so S3_ACK falls back to S4_PLAN and the
+        robot re-scans instead of going back to watching. Clearing HERE
+        distinguishes them, because only the caller knows which clip an override
+        was meant for, and it says so by the order it calls these two.
+        """
         if state not in ST.STATES:
             raise KeyError(state)
         with self._lock:
             self._want = state
+            self._next_override = None
 
     @property
     def settled_ms(self):
@@ -752,20 +770,6 @@ class ClipPlayer:
             while not self._stop:
                 completed = self._play_once(frames)
                 if not completed:
-                    # AN INTERRUPTED CLIP HAS NO `then` TO OVERRIDE, so a pending
-                    # arm_next is stale and must not survive to steer whatever
-                    # was requested instead.
-                    #
-                    # Found 2026-08-18 on the exhibition build. The head tap
-                    # wakes the robot with arm_next("S1_IDLE") + request(S2), and
-                    # the tablet is right there -- so the visitor picks a task
-                    # while S2 is still playing. S2 was interrupted, never
-                    # reached its `then`, and left the override armed; S3_ACK
-                    # then finished and the override replaced ITS `then`. The
-                    # robot nodded and went straight back to sleep, and the sweep
-                    # -- the whole middle of the demo -- never happened.
-                    with self._lock:
-                        self._next_override = None
                     break                       # interrupted by a request
                 self.loops_done += 1
                 if spec["loop"]:

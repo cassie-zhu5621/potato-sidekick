@@ -667,6 +667,10 @@ def main():
             # the last one.
             if val == "S5B_TRACK" and ctxd.get("aimed_pan") is not None:
                 player.arm_pan_deg(float(ctxd["aimed_pan"]))
+            # ARMING ONLY. The flow emits ("state", "S3_ACK") AFTER this one,
+            # and that is what requests the clip -- request() clears any pending
+            # override, so this must land on the far side of it. See
+            # ClipPlayer.request and the emission order in session_flow.
             player.arm_next(val)
             # Its screen says "I heard you.", which is true after a request and a
             # non-sequitur here. Held back for the length of the nod; see below.
@@ -1284,8 +1288,8 @@ def main():
                     # nod finishes on `hello` and only then falls to `idle`.
                     ctxd["hush_heard_until"] = time.time() + 1.9
                     link.ui("hello")
-                    player.arm_next("S1_IDLE")
                     player.request("S3_ACK")
+                    player.arm_next("S1_IDLE")
                 # ---- THE TWO EMERGENCY CONTROLS ------------------------------
                 #
                 # A session is one shot. When the actor plays the scene and the
@@ -1492,8 +1496,8 @@ def main():
                         # picture of being woken.
                         ctxd["hush_heard_until"] = time.time() + 2.4
                         link.ui("hello")
-                        player.arm_next("S1_IDLE")
                         player.request("S2_LISTEN")
+                        player.arm_next("S1_IDLE")
                         print("[tap] woken from idle")
                     else:
                         events.append("tap")

@@ -338,8 +338,14 @@ class SessionFlow:
                 # same act one turn later: you have seen what I showed you.
                 # `ack_then` arms the landing FIRST, because S3_ACK's own `then`
                 # is S4_PLAN and requesting the clip bare would walk into a sweep.
-                self._emit("ack_then", "S5B_TRACK")
+                # _go FIRST, ack_then SECOND. The loop turns ("state", X) into
+                # player.request(X), and request() clears any pending arm_next --
+                # so an arming emitted before it is wiped a microsecond after it
+                # is made, S3_ACK falls back to its own `then` (S4_PLAN), and the
+                # robot re-scans instead of returning to watching. Reported
+                # 2026-08-18 as "OK still goes back to scan".
                 self._go("S3_ACK", "OK -- seen; nodding, then back to watching")
+                self._emit("ack_then", "S5B_TRACK")
             return self.out
 
         if ev == "planned":
