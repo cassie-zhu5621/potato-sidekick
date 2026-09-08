@@ -188,7 +188,14 @@ class Sweep:
                 # later: the same frames score differently under each rule.
                 "provider": __import__("planning.provider", fromlist=["x"]
                                        ).provider_name(),
-                "score_rule": rule_name()}
+                "score_rule": rule_name(),
+                # WHICH FOLDER THE JPGS ARE IN. The meta named the files but not
+                # the directory, so anything reading `sweep.last` after the fact
+                # could not build a path to them -- the exhibition tablet serves
+                # them as /sweepimg/<dir>/<file>. Basename, not the full path:
+                # it is an id within session_feed, and absolute paths in a
+                # published record only leak the researcher's home directory.
+                "dir": os.path.basename(out)}
         with open(os.path.join(out, "plan.json"), "w") as f:
             json.dump(meta, f, indent=2)
         print(f"[sweep] {len(shots)} independent frames + local grid -> {out}   richest pan "

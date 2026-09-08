@@ -1259,6 +1259,11 @@ def main():
                     UI.STATE["pending_finding"] = False
                     resweep_now = bool(UI.STATE.get("pending_resweep"))
                     UI.STATE["pending_resweep"] = False
+                    # THE TABLET'S OK. Same event as the CoreS3's own button --
+                    # see webui/booth.py for why either screen may take it.
+                    if UI.STATE.get("pending_ok"):
+                        UI.STATE["pending_ok"] = False
+                        ui_events.append("ok")
                 # ---- THE NAME, AND THE ONE TIME IT GREETS --------------------
                 #
                 # Fired when the name ARRIVES rather than at process start, which
@@ -1464,7 +1469,34 @@ def main():
                 elif "PTT_UP" in line:      events.append("ptt_up")
                 elif "IN OK" in line:       events.append("ok")
                 elif "IN STOP" in line:     events.append("stop")
-                elif "BODYTAP" in line:     events.append("tap")
+                elif "BODYTAP" in line:
+                    # ONE GESTURE, TWO MEANINGS, DECIDED BY WHAT IT IS DOING.
+                    #
+                    # Watching -> "not that one" (the flow turns it into S6, and
+                    # that has been the tap's job since the study build).
+                    # Asleep   -> "wake up and look at me".
+                    #
+                    # Both are the same sentence -- put your attention where I am
+                    # pointing it -- which is why one touch can carry them.
+                    #
+                    # The wake is played FROM HERE rather than through the flow,
+                    # like the name greeting above it, because it starts and ends
+                    # in S1_IDLE: `arm_next` sends S2 home when it is done, so the
+                    # flow's state and the player's agree again the moment the
+                    # clip ends, and nothing in between can open a finding. A
+                    # flow state for it would buy nothing and cost a branch in
+                    # every rule that tests for idle.
+                    if flow.state == "S1_IDLE" and link:
+                        # S2_LISTEN is authored as nod -42 -> +53: it lifts out of
+                        # exactly the bow S1_IDLE holds. It is already the
+                        # picture of being woken.
+                        ctxd["hush_heard_until"] = time.time() + 2.4
+                        link.ui("hello")
+                        player.arm_next("S1_IDLE")
+                        player.request("S2_LISTEN")
+                        print("[tap] woken from idle")
+                    else:
+                        events.append("tap")
             while transcripts:
                 kind, text = transcripts.pop(0)
                 events.append(f"{kind}:{text}")
@@ -1789,6 +1821,17 @@ def main():
                         if jpg is not None:
                             UI.STATE["jpg"] = jpg
                         UI.STATE["states"] = rows
+                        # FOR THE EXHIBITION TABLET. Published from the loop, not
+                        # derived on the page: the tablet's prompt and the
+                        # robot's own screen must be the same claim about the
+                        # same instant, and that is only guaranteed if one place
+                        # decides it. See webui/booth.py.
+                        UI.STATE["flow_state"] = flow.state
+                        UI.STATE["plan_pending"] = bool(
+                            getattr(flow, "plan_pending", False))
+                        UI.STATE["noticed_n"] = int(getattr(flow, "noticed", 0))
+                        UI.STATE["describe"] = (story.describe if story else "") or ""
+                        UI.STATE["sweep_meta"] = getattr(sweep, "last", None)
 
             if v is not None and not a.no_view:
                 cv2.imshow("noticebot", v)

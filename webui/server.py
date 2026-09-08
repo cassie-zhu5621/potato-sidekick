@@ -50,6 +50,11 @@ STATE = {"jpg": None, "feed": [], "thumbs": {}, "frames": {},
          # participant is watching. These ask instead for the two things that are
          # actually wanted at that moment -- notice this now, and go look again.
          "pending_finding": False, "pending_resweep": False,
+         # THE EXHIBITION TABLET (webui/booth.py). `booth_choice_ja` is the
+         # Japanese the visitor tapped, kept so every later screen can echo
+         # back what THEY said rather than the English the planner got.
+         "pending_ok": False, "booth_choice_ja": "",
+         "describe": "", "noticed_n": 0, "flow_state": "", "plan_pending": False,
          # What the participant called it. Typed here, sent to the board as
          # EVT NAME, and drawn on `idle` for the rest of the session.
          "bot_name": "", "pending_name": None,
@@ -62,6 +67,8 @@ STATE = {"jpg": None, "feed": [], "thumbs": {}, "frames": {},
          "pending_pan": None,                           # developer re-aim
          "pan_now": None, "pan_scores": [],             # where it looks / sweep scores
          "pending_context": None}
+from webui.booth import CHOICES, PAGE as BOOTH_PAGE, booth_state, english_for
+
 LOCK = threading.Lock()
 ARGS = None
 
@@ -569,6 +576,18 @@ class H(BaseHTTPRequestHandler):
                     time.sleep(0.05)
             except Exception:
                 pass
+        elif p == "/booth":
+            self._send(200, "text/html; charset=utf-8", BOOTH_PAGE.encode())
+        elif p == "/booth.json":
+            from session.review import _records          # same reader as the feed
+            try:
+                recs = _records(feed_dir())
+            except Exception:
+                recs = []
+            with LOCK:
+                data = booth_state(STATE, recs, STATE.get("sweep_meta"))
+            self._send(200, "application/json",
+                       json.dumps(data, ensure_ascii=False).encode())
         elif p == "/plan.json":
             with LOCK:
                 data = {"context": STATE["context"], "why": STATE["why"],
@@ -712,6 +731,28 @@ class H(BaseHTTPRequestHandler):
             with LOCK:
                 STATE["pending_finding" if self.path == "/finding"
                       else "pending_resweep"] = True
+            self._send(200, "application/json", b'{"ok": true}')
+        elif self.path == "/booth/choose":
+            # STRAIGHT THROUGH THE DOOR A SPOKEN REQUEST USES. The loop drains
+            # `pending_context` into stt.manual(), which is the same path
+            # Whisper's output takes -- so the tap replaces the speaking and
+            # nothing else. The planner really compiles the sentence.
+            raw = self.rfile.read(int(self.headers.get("Content-Length", 0))
+                                  ).decode("utf-8", "ignore").strip()
+            en = english_for(raw)
+            if en:
+                ja = next((c["ja"] for c in CHOICES if c["id"] == raw), "")
+                with LOCK:
+                    STATE["pending_context"] = en
+                    STATE["booth_choice_ja"] = ja
+            self._send(200, "application/json", b'{"ok": true}')
+        elif self.path == "/booth/ok":
+            # EITHER SCREEN TAKES IT. The CoreS3 sends IN OK; this is the same
+            # event from the tablet. Whichever arrives first moves the flow on,
+            # and the other prompt clears itself on the next poll because both
+            # are reading one state -- no handshake needed.
+            with LOCK:
+                STATE["pending_ok"] = True
             self._send(200, "application/json", b'{"ok": true}')
         elif self.path == "/context":
             n = int(self.headers.get("Content-Length", 0))
