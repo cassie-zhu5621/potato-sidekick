@@ -172,25 +172,33 @@ body{margin:0;background:#141414;color:#f2f0ea;display:flex;flex-direction:colum
   border-radius:9px;padding:5px 10px;letter-spacing:.06em;
   transition:color .18s,background .18s}
 .f.on{color:#141414;background:#cfe33a;font-weight:700}
-.f b{display:block;font:400 9px inherit;letter-spacing:0;opacity:.55;
+.f b{display:block;font-weight:400;font-size:9px;letter-spacing:0;opacity:.55;
   margin-top:1px}
-h1{font:600 clamp(26px,3.4vh,40px)/1.3 inherit;margin:0;letter-spacing:.02em}
-.sub{font:clamp(15px,1.9vh,21px) inherit;color:#8a867d;margin-top:8px}
+h1{font-weight:600;font-size:clamp(26px,3.4vh,40px);line-height:1.3;margin:0;letter-spacing:.02em}
+.sub{font-size:clamp(15px,1.9vh,21px);color:#8a867d;margin-top:8px}
 .grow{flex:1;min-height:0;display:flex;flex-direction:column;gap:18px}
 
-/* THE CHOICE IS THE WHOLE SCREEN. A visitor decides from a metre away,
+/* NO `font:` SHORTHAND ON THIS PAGE, and it is not a style preference.
+   `font: 700 40px/1.3 inherit` is INVALID -- `inherit` is a CSS-wide keyword,
+   legal only as an entire value, never as the family slot -- so the browser
+   drops the whole declaration and the element renders at the inherited default.
+   Every size on this page was being thrown away that way, which is why the
+   choice buttons stayed at 16px however large the number was set. Longhands
+   only; the family comes down from body by inheritance anyway.
+
+   THE CHOICE IS THE WHOLE SCREEN. A visitor decides from a metre away,
    standing, in a hall, in about two seconds -- so the sentence is set at a
    size that is readable at that distance and centred, and the card is the
    touch target rather than the text inside it. clamp() keeps it right on an
    iPad mini and a 12.9 alike without a media query. */
 .card{background:#1d1d1a;border:3px solid #33332e;border-radius:28px;
   padding:20px;color:#f2f0ea;text-align:center;
-  font:700 clamp(40px,min(7.6vw,8.4vh),104px)/1.28 inherit;letter-spacing:.01em;
+  font-weight:700;font-size:clamp(40px,min(7.6vw,8.4vh),104px);line-height:1.28;letter-spacing:.01em;
   flex:1;display:flex;flex-direction:column;align-items:center;
   justify-content:center;gap:14px}
 .card:active{background:#cfe33a;color:#141414;border-color:#cfe33a;
   transform:scale(.985)}
-.card small{font:400 clamp(15px,2.1vh,26px) inherit;color:#8a867d}
+.card small{font-weight:400;font-size:clamp(15px,2.1vh,26px);color:#8a867d}
 .card:active small{color:#3a3a20}
 
 .grid{flex:1;display:grid;grid-template-columns:repeat(3,1fr);gap:12px;min-height:0}
@@ -203,7 +211,7 @@ h1{font:600 clamp(26px,3.4vh,40px)/1.3 inherit;margin:0;letter-spacing:.02em}
   color:#cfe33a;background:rgba(20,20,20,.72);padding:2px 7px;border-radius:7px}
 .cell.wait{border-style:dashed;color:#4a4a44;font:13px ui-monospace,monospace}
 
-.bar{font:15px inherit;color:#8a867d;display:flex;gap:14px;align-items:center}
+.bar{font-size:15px;color:#8a867d;display:flex;gap:14px;align-items:center}
 .dot{width:11px;height:11px;border-radius:50%;background:#cfe33a;
   animation:p 1.4s ease-in-out infinite}
 @keyframes p{0%,100%{opacity:.25}50%{opacity:1}}
@@ -213,16 +221,16 @@ h1{font:600 clamp(26px,3.4vh,40px)/1.3 inherit;margin:0;letter-spacing:.02em}
 #veil.on{display:flex}
 .pop{background:#faf9f6;color:#141414;border-radius:26px;padding:36px;
   max-width:640px;width:100%;text-align:center}
-.pop h2{font:700 30px/1.3 inherit;margin:0 0 14px}
-.pop p{font:19px/1.6 inherit;color:#3a3a35;margin:0 0 26px}
+.pop h2{font-weight:700;font-size:30px;line-height:1.3;margin:0 0 14px}
+.pop p{font-size:19px;line-height:1.6;color:#3a3a35;margin:0 0 26px}
 .ok{background:#141414;color:#faf9f6;border:0;border-radius:16px;
-  padding:20px 0;width:100%;font:700 23px inherit}
+  padding:20px 0;width:100%;font-weight:700;font-size:23px}
 .ok:active{background:#cfe33a;color:#141414}
 
 .story{display:flex;gap:14px;align-items:center;background:#1d1d1a;
   border-radius:16px;padding:12px;margin-bottom:10px}
 .story img{width:104px;height:66px;object-fit:cover;border-radius:9px;flex:none}
-.story div{font:15px/1.45 inherit;color:#d8d5cc}
+.story div{font-size:15px;line-height:1.45;color:#d8d5cc}
 .story span{display:block;font:12px ui-monospace,monospace;color:#7a776f;margin-top:4px}
 #stories{overflow-y:auto;flex:1;-webkit-overflow-scrolling:touch}
 </style></head><body>

@@ -104,8 +104,37 @@ def test_every_state_lights_exactly_one_lamp():
 
 def test_the_choice_is_set_large_enough_to_read_standing_up():
     from webui.booth import PAGE
-    assert "clamp(40px,min(7.6vw,8.4vh),104px)" in PAGE
+    assert "font-size:clamp(40px,min(7.6vw,8.4vh),104px)" in PAGE
     assert "text-align:center" in PAGE
+
+
+def test_no_font_shorthand_ending_in_inherit():
+    """`font: 700 40px/1.3 inherit` is invalid CSS -- `inherit` is a CSS-wide
+    keyword, legal only as an entire value, never as the shorthand's family
+    slot. The browser drops the whole declaration, so the element renders at the
+    inherited default and the size is silently ignored. Every size on this page
+    was being thrown away that way, and setting a bigger number changed nothing.
+    """
+    import re
+    from webui.booth import PAGE
+    # Comments out first -- the rule is explained in one, and the explanation
+    # necessarily quotes the thing it forbids.
+    css = re.sub(r"/\*.*?\*/", "", PAGE, flags=re.S)
+    bad = [d for d in re.findall(r"font:[^;}]*", css) if "inherit" in d]
+    assert not bad, bad
+
+
+def test_the_player_drops_a_stale_override_when_a_clip_is_cut_short():
+    """arm_next overrides the NEXT `then`. An interrupted clip never reaches a
+    `then`, so the arming is stale -- and it then hijacked the next transition.
+    The head tap arms S1_IDLE and plays S2; the visitor picks a task while S2 is
+    still running; S3_ACK finishes and goes to S1_IDLE instead of S4_PLAN. The
+    robot nodded and went back to sleep, and the sweep never happened."""
+    src = open(os.path.join(ROOT, "robot", "clip_player.py")).read()
+    i = src.index("completed = self._play_once(frames)")
+    block = src[i:i + 1400]
+    assert "self._next_override = None" in block
+    assert block.index("self._next_override = None") < block.index("break")
 
 
 # ------------------------------------------------------------ the sweep --

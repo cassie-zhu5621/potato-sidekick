@@ -752,6 +752,20 @@ class ClipPlayer:
             while not self._stop:
                 completed = self._play_once(frames)
                 if not completed:
+                    # AN INTERRUPTED CLIP HAS NO `then` TO OVERRIDE, so a pending
+                    # arm_next is stale and must not survive to steer whatever
+                    # was requested instead.
+                    #
+                    # Found 2026-08-18 on the exhibition build. The head tap
+                    # wakes the robot with arm_next("S1_IDLE") + request(S2), and
+                    # the tablet is right there -- so the visitor picks a task
+                    # while S2 is still playing. S2 was interrupted, never
+                    # reached its `then`, and left the override armed; S3_ACK
+                    # then finished and the override replaced ITS `then`. The
+                    # robot nodded and went straight back to sleep, and the sweep
+                    # -- the whole middle of the demo -- never happened.
+                    with self._lock:
+                        self._next_override = None
                     break                       # interrupted by a request
                 self.loops_done += 1
                 if spec["loop"]:
