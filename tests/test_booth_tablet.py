@@ -153,6 +153,25 @@ def test_both_screens_can_take_the_ok():
     assert 'UI.STATE["pending_ok"] = False' in src[i:i + 240]
 
 
+def test_the_tablet_fields_are_published_on_a_normal_run():
+    """They were written inside the `view is None` arm -- the fallback for a
+    detector that failed to load -- so on every real run they never executed.
+    The tablet sat on the choose screen for the whole session: no sweep, no red
+    frame, no notice. Nothing raised, because an unset flow_state is just a
+    string that matches no state.
+
+    Asserted by POSITION, since that is what was wrong: the publish has to come
+    before the branch, not inside either half of it.
+    """
+    src = open(os.path.join(ROOT, "noticebot_loop.py")).read()
+    pub = src.index('UI.STATE["flow_state"] = flow.state')
+    branch = src.index("                if view is not None:\n"
+                       "                    view.publish(")
+    assert pub < branch, "the booth publish is inside the detector-failed arm again"
+    for field in ("plan_pending", "noticed_n", "describe", "sweep_meta"):
+        assert f'UI.STATE["{field}"]' in src[pub:branch], field
+
+
 # ------------------------------------------------- one gesture, two meanings --
 def test_a_tap_wakes_it_from_idle_and_corrects_it_while_watching():
     src = open(os.path.join(ROOT, "noticebot_loop.py")).read()

@@ -127,15 +127,23 @@ body{margin:0;background:#141414;color:#f2f0ea;
   font-family:-apple-system,"Hiragino Sans","Noto Sans JP",sans-serif;
   height:100vh;overflow:hidden;user-select:none}
 #app{height:100%;display:flex;flex-direction:column;padding:28px;gap:20px}
-h1{font:600 30px/1.3 inherit;margin:0;letter-spacing:.02em}
-.sub{font:15px inherit;color:#8a867d;margin-top:6px}
+h1{font:600 clamp(26px,3.4vh,40px)/1.3 inherit;margin:0;letter-spacing:.02em}
+.sub{font:clamp(15px,1.9vh,21px) inherit;color:#8a867d;margin-top:8px}
 .grow{flex:1;min-height:0;display:flex;flex-direction:column;gap:18px}
 
-.card{background:#1d1d1a;border:2px solid #33332e;border-radius:22px;
-  padding:30px 28px;font:600 27px/1.45 inherit;color:#f2f0ea;text-align:left;
-  flex:1;display:flex;flex-direction:column;justify-content:center;gap:10px}
-.card:active{background:#cfe33a;color:#141414;border-color:#cfe33a}
-.card small{font:400 16px inherit;color:#8a867d}
+/* THE CHOICE IS THE WHOLE SCREEN. A visitor decides from a metre away,
+   standing, in a hall, in about two seconds -- so the sentence is set at a
+   size that is readable at that distance and centred, and the card is the
+   touch target rather than the text inside it. clamp() keeps it right on an
+   iPad mini and a 12.9 alike without a media query. */
+.card{background:#1d1d1a;border:3px solid #33332e;border-radius:28px;
+  padding:34px;color:#f2f0ea;text-align:center;
+  font:700 clamp(30px,4.4vh,52px)/1.35 inherit;letter-spacing:.01em;
+  flex:1;display:flex;flex-direction:column;align-items:center;
+  justify-content:center;gap:16px}
+.card:active{background:#cfe33a;color:#141414;border-color:#cfe33a;
+  transform:scale(.985)}
+.card small{font:400 clamp(15px,2vh,22px) inherit;color:#8a867d}
 .card:active small{color:#3a3a20}
 
 .grid{flex:1;display:grid;grid-template-columns:repeat(3,1fr);gap:12px;min-height:0}
@@ -208,7 +216,7 @@ function render(){
   if(S.phase==='choose'){
     a.innerHTML=`<div><h1>なにを見ていてほしい？</h1>
       <div class=sub>ポテトの頭にさわると、起きます</div></div>
-      <div class=grow>`+S.choices.map(c=>
+      <div class=grow style="gap:22px">`+S.choices.map(c=>
         `<div class=card onpointerdown="pick('${c.id}')">${esc(c.ja)}
            <small>${esc(c.sub)}</small></div>`).join('')+`</div>`;
   } else if(S.phase==='ack'){

@@ -1813,6 +1813,23 @@ def main():
                              "score": sum(3 if d["tier"] == "focus" else 1
                                           for d in sh["dets"])}
                             for sh in ((sweep.last or {}).get("shots") or [])]
+                        # FOR THE EXHIBITION TABLET. Published from the loop, not
+                        # derived on the page: the tablet's prompt and the
+                        # robot's own screen must be the same claim about the
+                        # same instant, and that is only guaranteed if one place
+                        # decides it. See webui/booth.py.
+                        #
+                        # HERE, not beside UI.STATE["states"] below. That sits in
+                        # the `view is None` arm -- the detector-failed fallback
+                        # -- so on a normal run it never executed: flow_state
+                        # stayed "" and the tablet showed the choose screen for
+                        # the whole session, sweep and all.
+                        UI.STATE["flow_state"] = flow.state
+                        UI.STATE["plan_pending"] = bool(
+                            getattr(flow, "plan_pending", False))
+                        UI.STATE["noticed_n"] = int(getattr(flow, "noticed", 0))
+                        UI.STATE["describe"] = (story.describe if story else "") or ""
+                        UI.STATE["sweep_meta"] = getattr(sweep, "last", None)
                 if view is not None:
                     view.publish(UI, jpg, states=rows,
                                  collecting=(story.collecting() if story else []))
@@ -1821,17 +1838,6 @@ def main():
                         if jpg is not None:
                             UI.STATE["jpg"] = jpg
                         UI.STATE["states"] = rows
-                        # FOR THE EXHIBITION TABLET. Published from the loop, not
-                        # derived on the page: the tablet's prompt and the
-                        # robot's own screen must be the same claim about the
-                        # same instant, and that is only guaranteed if one place
-                        # decides it. See webui/booth.py.
-                        UI.STATE["flow_state"] = flow.state
-                        UI.STATE["plan_pending"] = bool(
-                            getattr(flow, "plan_pending", False))
-                        UI.STATE["noticed_n"] = int(getattr(flow, "noticed", 0))
-                        UI.STATE["describe"] = (story.describe if story else "") or ""
-                        UI.STATE["sweep_meta"] = getattr(sweep, "last", None)
 
             if v is not None and not a.no_view:
                 cv2.imshow("noticebot", v)
