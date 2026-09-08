@@ -35,7 +35,7 @@ def test_the_phase_follows_the_robot_not_the_tablet():
     # visitor's question in both is which way it is looking, and the grid
     # answers that continuously; "tracking..." over an empty page said nothing
     # the robot standing in front of them was not already saying.
-    cases = [("S1_IDLE", "choose"), ("S3_ACK", "ack"), ("S4_PLAN", "room"),
+    cases = [("S1_IDLE", "choose"), ("S3_ACK", "room"), ("S4_PLAN", "room"),
              ("S5A_SETTLE", "room"), ("S5B_TRACK", "room"),
              ("S6_FINETUNE", "room"), ("S7a", "notice"), ("S7b", "notice")]
     for state, phase in cases:
@@ -248,12 +248,21 @@ def test_the_sixth_cell_shows_the_rule_in_the_developer_pages_words():
     assert REL_NAMES[9].startswith("hands")
 
 
+def test_the_nod_does_not_get_a_screen_of_its_own():
+    """1.7 s. A page that appears and vanishes inside two seconds is a flash,
+    not information -- and S3_ACK happens in two different places (after a
+    choice, after OK), so any one screen would be wrong in one of them."""
+    from webui.booth import PAGE
+    assert booth_state(_st(flow_state="S3_ACK"), [], None)["phase"] == "room"
+    assert "phase==='ack'" not in PAGE
+
+
 def test_it_reads_the_same_fields_the_live_panel_does():
     """build_status is the one place an entry becomes a row. Deriving these
     from the spec separately would give the tablet its own opinion of what is
     satisfied."""
     from webui.booth import PAGE
-    i = PAGE.index("function specCell(")
+    i = PAGE.index("function specInner(")
     block = PAGE[i:i + 900]
     for k in ("w.all", "w.any", "w.then", "w.truth", "w.on", "w.sat"):
         assert k in block, k
@@ -263,9 +272,37 @@ def test_it_reads_the_same_fields_the_live_panel_does():
 def test_the_grid_has_six_cells_and_the_last_is_the_rule():
     from webui.booth import PAGE
     i = PAGE.index("function cells(")
-    block = PAGE[i:i + 700]
+    block = PAGE[i:i + 1400]
     assert "i<5" in block, "five stations"
     assert "out.push(specCell())" in block, "and the rule in the sixth"
+
+
+def test_only_the_watched_direction_is_live_and_it_survives_a_re_render():
+    """An <img> on an MJPEG stream holds an open connection. Inside the
+    innerHTML render() rewrites, that connection would be torn down and
+    reopened five times a second -- a black flicker and a new TCP connection
+    each poll. It sits outside #app and is positioned over the cell instead."""
+    from webui.booth import PAGE
+    assert "<img id=live" in PAGE
+    i = PAGE.index("function cells(")
+    grid = PAGE[i:i + 1400]
+    assert "/stream.mjpg" not in grid, "the stream is not in the rewritten markup"
+    assert 'id=livecell' in grid, "the chosen cell is an empty frame to lay it over"
+    assert grid.count("/sweepimg/") == 1, "the other four stay as sweep stills"
+
+    place = PAGE[PAGE.index("function place("):]
+    assert "getBoundingClientRect" in place[:1800], "measured, not styled into the grid"
+    assert "if(!el.src)" in place[:1800], "opened once, not every frame"
+
+
+def test_tapping_the_live_view_expands_it_with_the_rule_beside_it():
+    from webui.booth import PAGE
+    assert 'onpointerdown="zoom()"' in PAGE
+    i = PAGE.index("function place(")
+    block = PAGE[i:i + 1400]
+    assert "if(BIG)" in block
+    assert "specInner()" in block, "the rule travels with it"
+    assert "もう一度タップでもどる" in block, "and says how to get back"
 
 
 # ------------------------------------------------------------ the notice --

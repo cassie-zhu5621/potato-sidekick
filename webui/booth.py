@@ -26,12 +26,15 @@ can DO:
              the pipeline. Waking the robot does NOT leave this screen: the tap
              on its head is the move that brings a visitor here, and taking the
              buttons away at that moment is the one thing the page must not do.
-    room     scanning AND watching, which used to be two. The five stations fill
-             in as the head captures them, the planner's boxes and a red frame
-             arrive with the plan, and the red frame MOVES when the head is
-             corrected. It replaced a screen that said "tracking..." over
-             nothing, which told a visitor less than the robot in front of them
-             already was. The 5-20 s VLM wait becomes the part people point at.
+    room     scanning AND watching, which used to be two -- and the nod between
+             them, which is 1.7 s and does not deserve a page of its own. Five
+             stations fill in as the head captures them, the planner's boxes and
+             a red frame arrive with the plan, and the red frame MOVES when the
+             head is corrected. The watched direction is the LIVE camera, not
+             the photograph taken during the sweep; tapping it fills the screen
+             with the rule beside it, tapping again puts it back. The sixth cell
+             of the 3x2 grid holds the rule itself. The 5-20 s VLM wait becomes
+             the part people point at.
     notice   the same prompt as the robot's own screen, either of which takes
              the OK.
     report   AFTER OK THE TABLET STOPS FOLLOWING THE ROBOT. The robot goes
@@ -143,7 +146,13 @@ def booth_state(STATE, feed_records, sweep_meta):
         # the strip.
         phase = "room"
     elif now == "S3_ACK":
-        phase = "ack"
+        # THE NOD DOES NOT GET A SCREEN. It is 1.7 s, and a page that appears and
+        # vanishes inside two seconds is a flash, not information. It also
+        # happens in two different places -- after a choice, and after OK -- so
+        # any one screen would be wrong in one of them. The strip shows ^o^ and
+        # the page stays where the visitor's attention already is: about to
+        # sweep, or reading the report they just acknowledged.
+        phase = "room"
     else:
         # S2_LISTEN LANDS HERE ON PURPOSE. That is the robot lifting its head
         # because the visitor touched it, and the next thing they have to do is
@@ -280,6 +289,18 @@ h1{font-weight:600;font-size:clamp(26px,3.4vh,40px);line-height:1.3;margin:0;let
 .cell .tag{position:absolute;left:8px;bottom:6px;font:12px ui-monospace,monospace;
   color:#cfe33a;background:rgba(20,20,20,.72);padding:2px 7px;border-radius:7px}
 .cell.wait{border-style:dashed;color:#54544c;font:22px ui-monospace,monospace}
+.cell.live{border-color:#e0554a}          /* the frame; the picture is #live */
+
+#live{position:fixed;display:none;object-fit:cover;z-index:5;
+  border:3px solid #e0554a;border-radius:14px;
+  box-shadow:0 0 0 3px rgba(224,85,74,.35);
+  transition:left .22s,top .22s,width .22s,height .22s}
+#live.big{border-radius:18px;box-shadow:0 0 0 4px rgba(224,85,74,.3)}
+#bigspec{position:fixed;display:none;z-index:6;flex-direction:column;gap:14px;
+  justify-content:center}
+#bigspec.on{display:flex}
+#bigspec .hint{font-size:clamp(13px,1.5vw,19px);color:#6f6c65;
+  font-family:ui-monospace,monospace}
 
 /* THE SIXTH CELL. Five stations in a 3x2 grid leave one empty, and what belongs
    there is the rule -- a visitor who can read hands-on + bag knows what to DO,
@@ -335,9 +356,17 @@ h1{font-weight:600;font-size:clamp(26px,3.4vh,40px);line-height:1.3;margin:0;let
 .wallbtn:active{color:#141414;background:#cfe33a}
 #stories{overflow-y:auto;flex:1;-webkit-overflow-scrolling:touch}
 </style></head><body>
+<!-- THE LIVE VIEW LIVES OUTSIDE #app AND IS NEVER RE-CREATED.
+     An <img> on an MJPEG stream holds an open connection; putting it inside the
+     innerHTML that render() rewrites would tear that connection down and open a
+     new one every poll -- 5 times a second -- which is a black flicker and a new
+     TCP connection each time. It is positioned OVER the cell instead, by
+     rectangle, so the grid can be rewritten as often as it likes. -->
+<img id=live onpointerdown="zoom()">
 <div id=top><div id=strip></div>
   <div class="f wallbtn" id=wb onpointerdown="wall()"></div></div>
 <div id=app></div>
+<div id=bigspec></div>
 <div id=veil><div class=pop>
   <h2 id=pt>気づきました</h2><p id=pd></p>
   <button class=ok onpointerdown="ok()">OK</button>
@@ -353,6 +382,39 @@ let S={phase:'choose'},sent=0;
 // follow the robot again.
 let MODE=null;        // null | 'report' | 'wall'
 let WAIT_FROM=0;      // how many stories existed when OK was pressed
+let BIG=false;        // the live view, expanded
+
+function zoom(){BIG=!BIG;place();}
+
+// PUT #live WHERE IT BELONGS THIS FRAME. Over the red cell normally; filling
+// the left of the screen when expanded, with the rule beside it. Measuring the
+// cell rather than styling the image into the grid is what lets the grid be
+// rewritten five times a second without ever touching the stream.
+function place(){
+  const el=document.getElementById('live'), sp=document.getElementById('bigspec');
+  const cell=document.getElementById('livecell');
+  if(!cell || MODE!==null){ el.style.display='none'; sp.classList.remove('on');
+                            BIG=false; return; }
+  if(!el.src) el.src='/stream.mjpg';      // opened once, on first need
+  el.style.display='block';
+  el.classList.toggle('big',BIG);
+  if(BIG){
+    const W=innerWidth, H=innerHeight, pad=Math.round(W*0.03);
+    const w=Math.round(W*0.60), h=Math.round(H*0.70);
+    Object.assign(el.style,{left:pad+'px',top:Math.round((H-h)/2)+'px',
+                            width:w+'px',height:h+'px'});
+    Object.assign(sp.style,{left:(pad*2+w)+'px',top:Math.round((H-h)/2)+'px',
+                            width:(W-pad*3-w)+'px',height:h+'px'});
+    sp.innerHTML=specInner()+'<div class=hint>もう一度タップでもどる</div>';
+    sp.classList.add('on');
+  }else{
+    const r=cell.getBoundingClientRect();
+    Object.assign(el.style,{left:r.left+'px',top:r.top+'px',
+                            width:r.width+'px',height:r.height+'px'});
+    sp.classList.remove('on');
+  }
+}
+addEventListener('resize',place);
 
 async function pick(id){
   if(Date.now()-sent<1500) return; sent=Date.now();
@@ -369,19 +431,23 @@ function wall(){MODE='wall';render();}
 function back(){MODE=null;render();}
 const esc=s=>String(s==null?'':s).replace(/[<>&]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
 
-function specCell(){
+function specInner(){
   const w=(S.watch||[])[0];
-  if(!w) return '<div class="cell spec"><span class=lb>NO RULE YET</span></div>';
+  if(!w) return '<span class=lb>NO RULE YET</span>';
   const ids=[...w.all,...w.any,...w.then];
   const op = w.then.length ? 'THEN' : (w.any.length && !w.all.length ? 'OR' : 'AND');
   const chips=ids.map((id,k)=>
     (k?`<span class=op>${op}</span>`:'')+
     `<span class="rel${w.truth[String(id)]?' t':''}">${esc(S.rel_names[id]||id)}</span>`
   ).join('');
-  return `<div class="cell spec${w.sat?' sat':''}">
-    <span class=lb>${w.sat?'いま成立':'これを待っています'}</span>
+  return `<span class=lb>${w.sat?'いま成立':'これを待っています'}</span>
     <div class=row>${chips}${w.on?`<span class=op>on</span>
-      <span class=obj>${esc(w.on)}</span>`:''}</div></div>`;
+      <span class=obj>${esc(w.on)}</span>`:''}</div>`;
+}
+
+function specCell(){
+  const w=(S.watch||[])[0];
+  return `<div class="cell spec${w&&w.sat?' sat':''}">${specInner()}</div>`;
 }
 
 function cells(){
@@ -391,9 +457,15 @@ function cells(){
     const pan=[-60,-30,0,30,60][i];
     if(!sh){out.push(`<div class="cell wait">${pan>0?'+':''}${pan}\u00b0</div>`);continue;}
     const on = S.chosen_pan!=null && sh.pan===S.chosen_pan;
-    out.push(`<div class="cell${on?' on':''}">
-      <img src="/sweepimg/${esc(sh.dir)}/${esc(sh.file)}">
-      <span class=tag>${sh.pan>0?'+':''}${sh.pan}°</span></div>`);
+    // THE CHOSEN CELL CARRIES NO PICTURE OF ITS OWN. It is the frame; #live is
+    // laid over it, so the one direction the robot is actually watching shows
+    // the live camera rather than a photograph taken during the sweep.
+    out.push(on
+      ? `<div class="cell live" id=livecell>
+           <span class=tag>${sh.pan>0?'+':''}${sh.pan}° LIVE</span></div>`
+      : `<div class=cell>
+           <img src="/sweepimg/${esc(sh.dir)}/${esc(sh.file)}">
+           <span class=tag>${sh.pan>0?'+':''}${sh.pan}°</span></div>`);
   }
   out.push(specCell());       // the sixth cell of the 3x2 grid
   return out.join('');
@@ -445,11 +517,6 @@ function render(){
       <div class=grow style="gap:18px">`+S.choices.map(c=>
         `<div class=card onpointerdown="pick('${c.id}')">${esc(c.ja)}
            <small>${esc(c.sub)}</small></div>`).join('')+`</div>`;
-  } else if(S.phase==='ack'){
-    a.innerHTML=`<div><h1>わかりました</h1>
-      <div class=sub>${esc(S.request_ja)}</div></div>
-      <div class=grow style="align-items:center;justify-content:center">
-      <div class=bar><span class=dot></span>うなずいています</div></div>`;
   } else {
     // ONE SCREEN FOR SCANNING AND FOR WATCHING. The only question a visitor has
     // in either is which way it is looking, and the grid answers it the whole
@@ -474,6 +541,7 @@ async function poll(){
     const changed = JSON.stringify(n)!==JSON.stringify(S);
     S=n;
     if(changed) render();
+    place();
     const veil=document.getElementById('veil');
     // NOT while the tablet is on a report or the wall. The robot re-enters S7
     // on the NEXT finding, and a prompt reappearing over the report the visitor
