@@ -296,11 +296,37 @@ h1{font-weight:600;font-size:clamp(26px,3.4vh,40px);line-height:1.3;margin:0;let
   box-shadow:0 0 0 3px rgba(224,85,74,.35);
   transition:left .22s,top .22s,width .22s,height .22s}
 #live.big{border-radius:18px;box-shadow:0 0 0 4px rgba(224,85,74,.3)}
-#bigspec{position:fixed;display:none;z-index:6;flex-direction:column;gap:14px;
-  justify-content:center}
-#bigspec.on{display:flex}
-#bigspec .hint{font-size:clamp(13px,1.5vw,19px);color:#6f6c65;
-  font-family:ui-monospace,monospace}
+/* EXPANDED: everything except the picture and the rule goes quiet. The rule is
+   NOT redrawn beside the live view -- it is already in the sixth cell, and the
+   expanded picture is sized to stop short of it, so the one copy stays where
+   the visitor last saw it. */
+#app.dim > *{opacity:.14;transition:opacity .22s}
+#app.dim .grid{opacity:1}
+#app.dim .cell{opacity:.10;transition:opacity .22s}
+#app.dim .cell.spec{opacity:1}
+#app.dim .bar{display:none}
+.hint{position:fixed;z-index:6;font-size:clamp(13px,1.5vw,19px);color:#6f6c65;
+  font-family:ui-monospace,monospace;display:none}
+.hint.on{display:block}
+
+/* THE WAIT AFTER OK. 6-45 s with one small line of text on it reads as a
+   machine that has stopped. The bar is deliberately NOT a real measure of
+   anything -- nothing here knows how long the narration will take, and a bar
+   that claimed to would be lying -- it is a sign of life, which is the only
+   honest thing to show. The face is doing the same job the robot's own face
+   does: it is what makes waiting feel like being waited WITH. */
+.waitbox{flex:1;display:flex;flex-direction:column;align-items:center;
+  justify-content:center;gap:22px}
+.wface{font-size:clamp(56px,9vw,120px);font-family:ui-monospace,monospace;
+  color:#cfe33a;animation:bob 2.2s ease-in-out infinite}
+@keyframes bob{0%,100%{transform:translateY(0)}50%{transform:translateY(-9px)}}
+.wtxt{font-size:clamp(19px,2.4vw,30px);color:#8a867d}
+.wbar{width:min(62%,520px);height:12px;border-radius:99px;background:#22221e;
+  overflow:hidden}
+.wbar i{display:block;height:100%;width:38%;border-radius:99px;
+  background:linear-gradient(90deg,#cfe33a,#88e4ea);
+  animation:slide 1.7s cubic-bezier(.6,0,.4,1) infinite}
+@keyframes slide{0%{transform:translateX(-110%)}100%{transform:translateX(280%)}}
 
 /* THE SIXTH CELL. Five stations in a 3x2 grid leave one empty, and what belongs
    there is the rule -- a visitor who can read hands-on + bag knows what to DO,
@@ -325,8 +351,11 @@ h1{font-weight:600;font-size:clamp(26px,3.4vh,40px);line-height:1.3;margin:0;let
   animation:p 1.4s ease-in-out infinite}
 @keyframes p{0%,100%{opacity:.25}50%{opacity:1}}
 
-#veil{position:fixed;inset:0;background:rgba(10,10,10,.86);display:none;
-  align-items:center;justify-content:center;padding:34px}
+/* ABOVE EVERYTHING, ALWAYS. The live view is z-index 5 and can be expanded to
+   most of the screen; the one thing that must never be behind it is the robot
+   asking to be answered. */
+#veil{position:fixed;inset:0;background:rgba(10,10,10,.9);display:none;
+  z-index:20;align-items:center;justify-content:center;padding:34px}
 #veil.on{display:flex}
 .pop{background:#faf9f6;color:#141414;border-radius:26px;padding:36px;
   max-width:640px;width:100%;text-align:center}
@@ -366,7 +395,7 @@ h1{font-weight:600;font-size:clamp(26px,3.4vh,40px);line-height:1.3;margin:0;let
 <div id=top><div id=strip></div>
   <div class="f wallbtn" id=wb onpointerdown="wall()"></div></div>
 <div id=app></div>
-<div id=bigspec></div>
+<div class=hint id=hint>もう一度タップでもどる</div>
 <div id=veil><div class=pop>
   <h2 id=pt>気づきました</h2><p id=pd></p>
   <button class=ok onpointerdown="ok()">OK</button>
@@ -391,27 +420,30 @@ function zoom(){BIG=!BIG;place();}
 // cell rather than styling the image into the grid is what lets the grid be
 // rewritten five times a second without ever touching the stream.
 function place(){
-  const el=document.getElementById('live'), sp=document.getElementById('bigspec');
-  const cell=document.getElementById('livecell');
-  if(!cell || MODE!==null){ el.style.display='none'; sp.classList.remove('on');
-                            BIG=false; return; }
+  const el=document.getElementById('live'), hint=document.getElementById('hint');
+  const cell=document.getElementById('livecell'), app=document.getElementById('app');
+  const spec=document.querySelector('.cell.spec');
+  if(!cell || MODE!==null){ el.style.display='none'; hint.classList.remove('on');
+                            app.classList.remove('dim'); BIG=false; return; }
   if(!el.src) el.src='/stream.mjpg';      // opened once, on first need
   el.style.display='block';
   el.classList.toggle('big',BIG);
-  if(BIG){
-    const W=innerWidth, H=innerHeight, pad=Math.round(W*0.03);
-    const w=Math.round(W*0.60), h=Math.round(H*0.70);
-    Object.assign(el.style,{left:pad+'px',top:Math.round((H-h)/2)+'px',
-                            width:w+'px',height:h+'px'});
-    Object.assign(sp.style,{left:(pad*2+w)+'px',top:Math.round((H-h)/2)+'px',
-                            width:(W-pad*3-w)+'px',height:h+'px'});
-    sp.innerHTML=specInner()+'<div class=hint>もう一度タップでもどる</div>';
-    sp.classList.add('on');
+  app.classList.toggle('dim',BIG);
+  hint.classList.toggle('on',BIG);
+  if(BIG && spec){
+    // STOP SHORT OF THE RULE. The sixth cell is the only other thing left lit,
+    // so the picture takes the grid's area minus that column -- one copy of the
+    // rule, exactly where it already was, no second rendering to keep in step.
+    const g=document.querySelector('.grid').getBoundingClientRect();
+    const r=spec.getBoundingClientRect();
+    Object.assign(el.style,{left:g.left+'px',top:g.top+'px',
+                            width:(r.left-g.left-14)+'px',height:g.height+'px'});
+    Object.assign(hint.style,{left:r.left+'px',
+                              top:(r.bottom+10)+'px',width:r.width+'px'});
   }else{
     const r=cell.getBoundingClientRect();
     Object.assign(el.style,{left:r.left+'px',top:r.top+'px',
                             width:r.width+'px',height:r.height+'px'});
-    sp.classList.remove('on');
   }
 }
 addEventListener('resize',place);
@@ -507,8 +539,11 @@ function render(){
       <div class=sub>${esc(S.request_ja)}</div></div>
       <div class=grow>`+(fresh
         ? story1(fresh)+`<button class=ok onpointerdown="back()">とじる</button>`
-        : `<div class=bar style="justify-content:center;flex:1">
-             <span class=dot></span>しばらくお待ちください</div>`)+`</div>`;
+        : `<div class=waitbox>
+             <div class=wface>\uff08\u30fb\u03c9\u30fb\uff09</div>
+             <div class=wtxt>まとめています…</div>
+             <div class=wbar><i></i></div>
+           </div>`)+`</div>`;
     return;
   }
   if(S.phase==='choose'){

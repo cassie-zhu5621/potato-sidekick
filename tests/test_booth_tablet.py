@@ -295,14 +295,46 @@ def test_only_the_watched_direction_is_live_and_it_survives_a_re_render():
     assert "if(!el.src)" in place[:1800], "opened once, not every frame"
 
 
-def test_tapping_the_live_view_expands_it_with_the_rule_beside_it():
+def test_expanding_dims_everything_but_the_picture_and_the_one_rule():
+    """The rule is NOT redrawn beside the live view -- it is already in the sixth
+    cell. A second copy is a second thing to keep in step, and the visitor has
+    to find it again in a new place."""
+    import re
     from webui.booth import PAGE
     assert 'onpointerdown="zoom()"' in PAGE
     i = PAGE.index("function place(")
-    block = PAGE[i:i + 1400]
-    assert "if(BIG)" in block
-    assert "specInner()" in block, "the rule travels with it"
-    assert "もう一度タップでもどる" in block, "and says how to get back"
+    block = PAGE[i:i + 1600]
+    assert "app.classList.toggle('dim',BIG)" in block
+    assert "specInner()" not in block, "one copy of the rule, not two"
+    assert "spec.getBoundingClientRect()" in block, "sized to stop short of it"
+
+    css = re.sub(r"/\*.*?\*/", "", PAGE, flags=re.S)
+    assert "#app.dim .cell.spec{opacity:1}" in css, "the rule stays lit"
+    assert "#app.dim .bar{display:none}" in css, "the bottom row goes"
+
+
+def test_the_prompt_is_never_behind_the_expanded_view():
+    """The live view can fill most of the screen. The one thing that must never
+    be behind it is the robot asking to be answered."""
+    import re
+    from webui.booth import PAGE
+    css = re.sub(r"/\*.*?\*/", "", PAGE, flags=re.S)
+    live = int(re.search(r"#live\{[^}]*z-index:(\d+)", css).group(1))
+    veil = int(re.search(r"#veil\{[^}]*z-index:(\d+)", css).group(1))
+    assert veil > live, f"veil {veil} must sit above live {live}"
+
+
+def test_the_wait_has_a_face_and_a_bar_that_promises_nothing():
+    """6-45 s with one small line on it reads as a machine that has stopped.
+    Nothing here knows how long the narration will take, so a bar that claimed
+    to would be lying -- it is a sign of life, not a measure."""
+    import re
+    from webui.booth import PAGE
+    assert "class=wface" in PAGE and "class=wbar" in PAGE
+    css = re.sub(r"/\*.*?\*/", "", PAGE, flags=re.S)
+    bar = re.search(r"\.wbar i\{[^}]*\}", css).group(0)
+    assert "animation:slide" in bar
+    assert "width:38%" in bar, "a fixed sliver -- it is not tracking progress"
 
 
 # ------------------------------------------------------------ the notice --
