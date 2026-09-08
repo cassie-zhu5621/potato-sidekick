@@ -774,11 +774,45 @@ class H(BaseHTTPRequestHandler):
             pass
 
 
+def lan_address():
+    """This machine's address on the LAN, or None.
+
+    For the address to TYPE INTO A TABLET. `ipconfig getifaddr en0` is the usual
+    answer and it is wrong often enough to matter: en0 is not always Wi-Fi, and
+    the venue's network changes the number anyway. Asking the routing table
+    which interface actually reaches the outside world gets the right one on any
+    machine and any network.
+
+    No packet is sent -- connect() on a UDP socket only picks a route.
+
+    NOT the `.local` name. mDNS is intermittently refused on iOS, and an
+    autocompleted `https://` against a plain-HTTP server fails with a message
+    about certificates, which sends you looking in the wrong place entirely.
+    Both of those cost an afternoon on 2026-08-17.
+    """
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("192.0.2.1", 9))       # TEST-NET-1: reserved, never routed
+        return s.getsockname()[0]
+    except Exception:
+        return None
+    finally:
+        s.close()
+
+
 def serve(args):
     global ARGS
     ARGS = args
     srv = ThreadingHTTPServer(("", args.web_port), H)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
-    print(f"open  http://localhost:{args.web_port}   (live + plan + feed + context box)")
+    port = args.web_port
+    print(f"open  http://localhost:{port}   (live + plan + feed + context box)")
+    ip = lan_address()
+    if ip:
+        print(f"      http://{ip}:{port}/booth   <- type THIS on the iPad "
+              f"(same wi-fi; http, not https)")
+    else:
+        print("      no LAN address -- a tablet cannot reach this machine")
     import sys
     return sys.modules[__name__]

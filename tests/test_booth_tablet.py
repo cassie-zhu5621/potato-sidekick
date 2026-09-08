@@ -119,6 +119,31 @@ def test_the_page_and_the_poll_serve(tmp_path):
     assert [c["id"] for c in data["choices"]] == [c["id"] for c in CHOICES]
 
 
+def test_the_tablet_address_is_printed_at_startup(capsys):
+    """So nobody has to guess which interface is Wi-Fi. `ipconfig getifaddr en0`
+    is the usual advice and it is wrong often enough to matter -- en0 is not
+    always Wi-Fi, and the venue changes the number anyway."""
+    W.serve(__import__("argparse").Namespace(feed_dir=".", web_port=8125))
+    out = capsys.readouterr().out
+    ip = W.lan_address()
+    assert ip is None or f"http://{ip}:8125/booth" in out
+    # A URL, not the word -- the line deliberately SAYS "http, not https",
+    # because Safari autocompletes to https and then fails on a certificate
+    # error, which sends you looking at the wrong layer entirely.
+    assert "https://" not in out, "the server is plain HTTP"
+    assert ".local" not in out, "mDNS is intermittently refused on iOS"
+
+
+def test_finding_the_address_sends_no_packet():
+    """A UDP connect() only picks a route. Anything that actually reached the
+    network would hang for the timeout when the venue's wifi is down, which is
+    exactly when this line is being read."""
+    import inspect
+    src = inspect.getsource(W.lan_address)
+    assert "SOCK_DGRAM" in src
+    assert "192.0.2." in src, "TEST-NET-1: reserved, guaranteed never routed"
+
+
 def test_both_screens_can_take_the_ok():
     """The CoreS3 sends IN OK; this is the same event from the tablet. The loop
     drains one flag, so whichever arrives first is the one that counts."""
