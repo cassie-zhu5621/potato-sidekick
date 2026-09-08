@@ -185,13 +185,16 @@ PAGE = """<!doctype html><html lang=ja><head><meta charset=utf-8>
 body{margin:0;background:#141414;color:#f2f0ea;display:flex;flex-direction:column;
   font-family:-apple-system,"Hiragino Sans","Noto Sans JP",sans-serif;
   height:100vh;overflow:hidden;user-select:none}
-#app{height:100%;display:flex;flex-direction:column;padding:20px 28px 28px;gap:16px}
 
 /* THE STATE STRIP. Small, at the top, always there. A state change is worth a
    glance, not a screen -- swapping the whole page when the robot lifts its head
    took the two task buttons away at the moment the visitor needed them. */
 #strip{display:flex;gap:8px;justify-content:center;flex:none;padding:14px 0 0}
-#app{flex:1;min-height:0}
+/* ONE rule for #app, not two. It carried height:100% AND flex:1 at the same
+   time, so with the strip above it the page ran past the viewport and the
+   bottom -- the grid, the buttons -- was clipped away under overflow:hidden. */
+#app{flex:1;min-height:0;display:flex;flex-direction:column;
+  padding:16px 28px 28px;gap:14px}
 .f{font:14px ui-monospace,monospace;color:#3f3f3a;background:#1a1a17;
   border-radius:9px;padding:5px 10px;letter-spacing:.06em;
   transition:color .18s,background .18s}
@@ -217,12 +220,12 @@ h1{font-weight:600;font-size:clamp(26px,3.4vh,40px);line-height:1.3;margin:0;let
    iPad mini and a 12.9 alike without a media query. */
 .card{background:#1d1d1a;border:3px solid #33332e;border-radius:28px;
   padding:20px;color:#f2f0ea;text-align:center;
-  font-weight:700;font-size:clamp(40px,min(7.6vw,8.4vh),104px);line-height:1.28;letter-spacing:.01em;
+  font-weight:800;font-size:clamp(48px,9vw,132px);line-height:1.22;letter-spacing:.01em;
   flex:1;display:flex;flex-direction:column;align-items:center;
   justify-content:center;gap:14px}
 .card:active{background:#cfe33a;color:#141414;border-color:#cfe33a;
   transform:scale(.985)}
-.card small{font-weight:400;font-size:clamp(15px,2.1vh,26px);color:#8a867d}
+.card small{font-weight:400;font-size:clamp(17px,2.4vw,32px);color:#8a867d}
 .card:active small{color:#3a3a20}
 
 .grid{flex:1;display:grid;grid-template-columns:repeat(3,1fr);gap:12px;min-height:0}
@@ -233,7 +236,7 @@ h1{font-weight:600;font-size:clamp(26px,3.4vh,40px);line-height:1.3;margin:0;let
 .cell.on{border-color:#e0554a;box-shadow:0 0 0 3px rgba(224,85,74,.35)}
 .cell .tag{position:absolute;left:8px;bottom:6px;font:12px ui-monospace,monospace;
   color:#cfe33a;background:rgba(20,20,20,.72);padding:2px 7px;border-radius:7px}
-.cell.wait{border-style:dashed;color:#4a4a44;font:13px ui-monospace,monospace}
+.cell.wait{border-style:dashed;color:#54544c;font:22px ui-monospace,monospace}
 
 .bar{font-size:15px;color:#8a867d;display:flex;gap:14px;align-items:center}
 .dot{width:11px;height:11px;border-radius:50%;background:#cfe33a;
@@ -282,7 +285,8 @@ function cells(){
   const out=[];
   for(let i=0;i<5;i++){
     const sh=S.shots[i];
-    if(!sh){out.push('<div class="cell wait">…</div>');continue;}
+    const pan=[-60,-30,0,30,60][i];
+    if(!sh){out.push(`<div class="cell wait">${pan>0?'+':''}${pan}\u00b0</div>`);continue;}
     const on = S.chosen_pan!=null && sh.pan===S.chosen_pan;
     out.push(`<div class="cell${on?' on':''}">
       <img src="/sweepimg/${esc(sh.dir)}/${esc(sh.file)}">

@@ -129,9 +129,26 @@ def test_every_state_lights_exactly_one_lamp():
 
 
 def test_the_choice_is_set_large_enough_to_read_standing_up():
+    """Driven off the WIDTH, which is the dimension a two-line Japanese
+    sentence actually runs out of, with a floor high enough that a small
+    laptop window still shows it big -- that window is where it gets checked."""
+    import re
     from webui.booth import PAGE
-    assert "font-size:clamp(40px,min(7.6vw,8.4vh),104px)" in PAGE
-    assert "text-align:center" in PAGE
+    css = re.sub(r"/\*.*?\*/", "", PAGE, flags=re.S)
+    card = re.search(r"\.card\{[^}]*\}", css).group(0)
+    size = re.search(r"font-size:clamp\((\d+)px", card)
+    assert size and int(size.group(1)) >= 44, card
+    assert "text-align:center" in card
+
+
+def test_app_is_laid_out_once():
+    """Two live #app rules gave it height:100% AND flex:1. With the strip above
+    it the page ran past the viewport and overflow:hidden cut the bottom off --
+    the grid on one screen, the second button on the other."""
+    import re
+    from webui.booth import PAGE
+    css = re.sub(r"/\*.*?\*/", "", PAGE, flags=re.S)
+    assert len(re.findall(r"#app\{", css)) == 1
 
 
 def test_no_font_shorthand_ending_in_inherit():
