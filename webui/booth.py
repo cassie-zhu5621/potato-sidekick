@@ -20,7 +20,12 @@ THE SCREENS. Fewer than there are states, on purpose -- the strip along the top
 carries the state, and a page swap is reserved for a change in what the visitor
 can DO:
 
-    choose   two Japanese sentences. Tapping one posts the ENGLISH sentence
+    sleep    a sleeping face and one line asking to be touched. A stand with a
+             list of options on it is a kiosk; a stand with something asleep on
+             it is a thing you want to wake -- and waking it is how everything
+             else here starts, so the tap has a consequence on both screens at
+             once, which is what teaches the gesture.
+    choose   three Japanese sentences. Tapping one posts the ENGLISH sentence
              through the same door a spoken request uses (stt.manual), so the
              planner really compiles it -- the tap replaces the speaking, not
              the pipeline. Waking the robot does NOT leave this screen: the tap
@@ -70,6 +75,17 @@ CHOICES = [
      "ja": "人が集まったら教えて",
      "sub": "まわりに人が集まってきたら",
      "en": "tell me if people gather around"},
+    # THE ROOM THE STAND IS ACTUALLY IN. Everyone around is building their own
+    # demo -- taping posters up, kneeling on the floor with a tripod, carrying
+    # equipment past. That is the richest thing happening in this hall, it costs
+    # the visitor nothing to arrange, and it makes the point better than a
+    # staged event could: the robot is watching the room the visitor is standing
+    # in, not a scene set up for it. hands-on again, because it is the relation
+    # tuned hardest and the one those movements actually produce.
+    {"id": "setup",
+     "ja": "となりで準備している人がいたら教えて",
+     "sub": "機材をさわりはじめたら",
+     "en": "tell me if someone starts handling their equipment at the next table"},
 ]
 
 _EN = {c["id"]: c["en"] for c in CHOICES}
@@ -153,13 +169,19 @@ def booth_state(STATE, feed_records, sweep_meta):
         # the page stays where the visitor's attention already is: about to
         # sweep, or reading the report they just acknowledged.
         phase = "room"
+    elif now == "S1_IDLE" or not now:
+        # ASLEEP IS A FACE, NOT A MENU. A stand with a list of options on it is
+        # a kiosk; a stand with something sleeping on it is a thing you want to
+        # wake. It also gives the head tap a consequence on BOTH screens at
+        # once, which is what teaches the gesture -- and the gesture is how
+        # everything else here starts.
+        phase = "sleep"
     else:
-        # S2_LISTEN LANDS HERE ON PURPOSE. That is the robot lifting its head
-        # because the visitor touched it, and the next thing they have to do is
-        # pick a task -- so the choice must still be on the screen. Sending them
-        # to a "woken" screen took the two buttons away at the exact moment they
-        # were needed. The state is shown by the face strip instead, which is
-        # what a state change is worth here: a glance, not a screen.
+        # S2_LISTEN LANDS HERE. The robot has lifted its head because the
+        # visitor touched it, and the choice is what they need next -- so the
+        # tap is exactly what brings the two sentences up. Sending them to a
+        # "woken" screen instead would take the page one step further from the
+        # thing they came to do.
         phase = "choose"
 
     # WHICH FRAME IS RED: the station nearest where it is ACTUALLY AIMED, not
@@ -272,7 +294,8 @@ h1{font-weight:600;font-size:clamp(26px,3.4vh,40px);line-height:1.3;margin:0;let
    iPad mini and a 12.9 alike without a media query. */
 .card{background:#1d1d1a;border:3px solid #33332e;border-radius:28px;
   padding:20px;color:#f2f0ea;text-align:center;
-  font-weight:800;font-size:clamp(48px,9vw,132px);line-height:1.22;letter-spacing:.01em;
+  font-weight:800;font-size:clamp(44px,min(8.5vw,10vh),120px);line-height:1.22;
+  letter-spacing:.01em;
   flex:1;display:flex;flex-direction:column;align-items:center;
   justify-content:center;gap:14px}
 .card:active{background:#cfe33a;color:#141414;border-color:#cfe33a;
@@ -315,6 +338,22 @@ h1{font-weight:600;font-size:clamp(26px,3.4vh,40px);line-height:1.3;margin:0;let
    that claimed to would be lying -- it is a sign of life, which is the only
    honest thing to show. The face is doing the same job the robot's own face
    does: it is what makes waiting feel like being waited WITH. */
+/* ASLEEP. A stand with a list of options on it is a kiosk; a stand with
+   something sleeping on it is a thing you want to wake -- and waking it is how
+   everything else here starts, so the page has to ask for that and nothing
+   else. Same face the robot's own screen wears in idle. */
+.sleep{flex:1;display:flex;flex-direction:column;align-items:center;
+  justify-content:center;gap:30px}
+.sface{font-size:clamp(64px,12vw,180px);font-family:ui-monospace,monospace;
+  color:#4a4a44;position:relative;animation:breathe 4.4s ease-in-out infinite}
+.sface i{position:absolute;left:104%;top:-.15em;font-size:.34em;
+  font-style:normal;color:#3a3a35;letter-spacing:.24em;
+  animation:zzz 4.4s ease-in-out infinite}
+@keyframes breathe{0%,100%{opacity:.55}50%{opacity:1}}
+@keyframes zzz{0%,100%{opacity:.15;transform:translateY(4px)}
+               50%{opacity:.9;transform:translateY(-6px)}}
+.stap{font-size:clamp(20px,2.6vw,34px);color:#8a867d}
+
 .waitbox{flex:1;display:flex;flex-direction:column;align-items:center;
   justify-content:center;gap:22px}
 .wface{font-size:clamp(28px,4.5vw,60px);font-family:ui-monospace,monospace;
@@ -544,6 +583,13 @@ function render(){
              <div class=wtxt>まとめています…</div>
              <div class=wbar><i></i></div>
            </div>`)+`</div>`;
+    return;
+  }
+  if(S.phase==='sleep'){
+    a.innerHTML=`<div class=sleep>
+        <div class=sface>(-_-)<i>z z z</i></div>
+        <div class=stap>あたまに そっとさわってください</div>
+      </div>`;
     return;
   }
   if(S.phase==='choose'){

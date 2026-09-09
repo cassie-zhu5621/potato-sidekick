@@ -35,7 +35,7 @@ def test_the_phase_follows_the_robot_not_the_tablet():
     # visitor's question in both is which way it is looking, and the grid
     # answers that continuously; "tracking..." over an empty page said nothing
     # the robot standing in front of them was not already saying.
-    cases = [("S1_IDLE", "choose"), ("S3_ACK", "room"), ("S4_PLAN", "room"),
+    cases = [("S1_IDLE", "sleep"), ("S3_ACK", "room"), ("S4_PLAN", "room"),
              ("S5A_SETTLE", "room"), ("S5B_TRACK", "room"),
              ("S6_FINETUNE", "room"), ("S7a", "notice"), ("S7b", "notice")]
     for state, phase in cases:
@@ -87,11 +87,28 @@ def test_an_id_we_did_not_write_installs_nothing():
     assert english_for(None) is None
 
 
-def test_waking_it_does_not_take_the_choice_away():
-    """The visitor touches the head, the robot lifts it, and the next thing they
-    have to do is pick a task. Mapping S2_LISTEN to its own screen removed both
-    buttons at exactly that moment."""
+def test_asleep_is_a_face_and_waking_it_is_what_brings_up_the_choice():
+    """A stand with a list of options on it is a kiosk; a stand with something
+    sleeping on it is a thing you want to wake. And waking it is how everything
+    else starts, so the tap has a consequence on both screens at once -- which
+    is what teaches the gesture."""
+    from webui.booth import PAGE
+    assert booth_state(_st(flow_state="S1_IDLE"), [], None)["phase"] == "sleep"
+    assert booth_state(_st(flow_state=""), [], None)["phase"] == "sleep"
     assert booth_state(_st(flow_state="S2_LISTEN"), [], None)["phase"] == "choose"
+    assert "あたまに そっとさわってください" in PAGE
+    assert "class=sface" in PAGE
+
+
+def test_the_third_task_is_the_room_the_stand_is_in():
+    """Everyone around is building their own demo. That is the richest thing
+    happening in the hall, it costs the visitor nothing to arrange, and it makes
+    the point better than a staged event could."""
+    ids = [c["id"] for c in CHOICES]
+    assert ids == ["touch", "gather", "setup"]
+    setup = CHOICES[-1]
+    assert "equipment" in setup["en"]
+    assert setup["en"].isascii() and not setup["ja"].isascii()
 
 
 def test_the_strip_says_the_state_instead():
@@ -445,10 +462,11 @@ def test_the_page_and_the_poll_serve(tmp_path):
     # to change the wording, and more importantly the page holds no copy of the
     # sentences that could drift from the ones the planner is given.
     assert "荷物に触ったら教えて" not in page
+    assert "となりで準備している人がいたら教えて" not in page
     raw = urllib.request.urlopen(base + "/booth.json", timeout=5).read()
     assert "荷物に触ったら教えて" in raw.decode("utf-8")
     data = json.loads(raw)
-    assert data["phase"] in ("choose", "ack", "sweep", "watch", "notice")
+    assert data["phase"] in ("sleep", "choose", "room", "notice")
     assert [c["id"] for c in data["choices"]] == [c["id"] for c in CHOICES]
 
 

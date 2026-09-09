@@ -111,13 +111,16 @@ iPad hangs, it is isolation.
 ## 4. What a visitor does
 
 ```
-   ねている        Idle. Sleeping face, breathing light.
-1  頭にさわる      Tap -> it lifts out of the bow and looks up.          (S2)
-                   The tablet does NOT change page: the choice is what
-                   they need next, and taking it away here is the one
-                   thing the page must not do.
-2  iPadで選ぶ      Two Japanese sentences. Tapping posts the ENGLISH one
-                   through the same door speech uses, so the planner
+   ねている        Idle. Sleeping face on the robot AND on the iPad --
+                   (-_-) z z z and one line: あたまに そっとさわって
+                   ください. No menu: a stand with a list of options on
+                   it is a kiosk.
+1  頭にさわる      Tap -> it lifts out of the bow and looks up, and the
+                   THREE CHOICES appear on the iPad.                    (S2)
+                   The tap has a consequence on both screens at once,
+                   which is what teaches the gesture.
+2  iPadで選ぶ      Three Japanese sentences. Tapping posts the ENGLISH
+                   one through the same door speech uses, so the planner
                    really compiles it.
 3  うなずく        Acknowledge. 1.7 s, no page of its own -- the strip
                    shows ^o^ and the page stays put.                    (S3)
@@ -163,6 +166,24 @@ same thing twice. `☰` opens the day's stories; it hides itself while open.
 
 ---
 
+## 4b. The keys, from the terminal
+
+They work in the terminal the loop was launched from — no need to click the
+preview window first.
+
+| key | does |
+|---|---|
+| `1`…`8`, `0` | force a state (1 Idle · 2 Attend · 3 Acknowledge · 4 Scan · 5 Watch · 0 Settle · 6 Correct · 7 Call · 8 Error) |
+| `g` | S2_LISTEN — the same lift the head tap produces, for testing without the sensor |
+| `f` | force a finding — the keyboard twin of **notice this NOW** |
+| `r` | torque off (press a state key to re-engage) |
+| `q` | quit |
+
+Useful before the sensor is wired: `g` → tap a choice on the iPad → `f` → OK.
+That walks the whole demo without touching the robot.
+
+---
+
 ## 5. When it does not fire
 
 Both controls are on the **laptop's** page (`http://localhost:8000`, LIVE tab,
@@ -202,8 +223,16 @@ no prompt ever sees.
 `webui/booth.py`, `CHOICES` at the top. Japanese for the visitor, English for
 the planner; **the planner never sees Japanese**. Restart the loop.
 
-Two choices is deliberate. A visitor deciding between two things reads them; a
-visitor deciding between four picks the first one.
+The three shipped are:
+
+| | asks for | why |
+|---|---|---|
+| 荷物に触ったら教えて | hands-on the visitor's own bag | "that is mine" is what makes delegating mean anything |
+| 人が集まったら教えて | gathering | ambient; a crowded hall supplies it for free |
+| となりで準備している人がいたら教えて | hands-on equipment at the next table | **the room the stand is actually in** — everyone around is taping up posters and assembling tripods. Costs the visitor nothing to arrange, and makes the point better than a staged event could |
+
+Keep it to three or fewer. A visitor deciding between two or three things reads
+them; a visitor deciding between five picks the first one.
 
 ---
 
@@ -228,3 +257,4 @@ call, and `review.html`.
 | the wall is empty | the loop was restarted; the wall is one `attention_log.jsonl` |
 | planning takes 20 s | `net_check`. If FLOOR is high it is Google, and nothing here helps |
 | the live cell flickers black | the stream got moved inside the markup `render()` rewrites — it must stay outside `#app` |
+| keyboard keys do nothing | fixed 2026-09-09 — the terminal used to be read only under `--no-view`, so with a preview window open `f`, `g` and the state numbers only worked when THAT window had focus. If it regresses, look for an `a.no_view` gate on `stdin_key()` |

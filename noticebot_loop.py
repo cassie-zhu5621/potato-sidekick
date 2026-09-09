@@ -1854,8 +1854,21 @@ def main():
                 time.sleep(0.02)
                 k = 255
 
-            if k == 255 and a.no_view:
-                k = stdin_key()          # headless still needs the override
+            # THE TERMINAL ALWAYS WORKS, not only when there is no preview.
+            #
+            # cv2.waitKey only receives a key while the "noticebot" WINDOW has
+            # focus, so with a preview open every documented key -- f, g, the
+            # state numbers, the pan letters -- did nothing when typed into the
+            # terminal the loop was launched from. At a stand that terminal is
+            # what the researcher has in front of them, and clicking a preview
+            # window first is not a thing anyone remembers under a visitor's
+            # gaze. Reported 2026-09-09.
+            #
+            # No conflict: a key from the window leaves k != 255 and stdin is
+            # never consulted, and stdin_key returns 255 immediately when there
+            # is nothing waiting or stdin is not a tty.
+            if k == 255:
+                k = stdin_key()
 
             if k == ord("q"):
                 break
