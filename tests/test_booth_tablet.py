@@ -101,14 +101,24 @@ def test_asleep_is_a_face_and_waking_it_is_what_brings_up_the_choice():
 
 
 def test_the_third_task_is_the_room_the_stand_is_in():
-    """Everyone around is building their own demo. That is the richest thing
-    happening in the hall, it costs the visitor nothing to arrange, and it makes
-    the point better than a staged event could."""
+    """Presentations start at the posters all around, all day. It costs the
+    visitor nothing to arrange, it happens whether or not anyone is waiting for
+    it, and it makes the point better than a staged event could."""
     ids = [c["id"] for c in CHOICES]
-    assert ids == ["touch", "gather", "setup"]
-    setup = CHOICES[-1]
-    assert "equipment" in setup["en"]
-    assert setup["en"].isascii() and not setup["ja"].isascii()
+    assert ids == ["touch", "gather", "poster"]
+    poster = CHOICES[-1]
+    assert "poster" in poster["en"]
+    assert poster["en"].isascii() and not poster["ja"].isascii()
+
+
+def test_the_two_crowd_tasks_are_not_the_same_request():
+    """`gather` is people collecting near the visitor; `poster` is people
+    collecting somewhere SPECIFIC. Without the object they would compile to the
+    same watch entry and the choice would be a choice of wording only."""
+    gather = next(c for c in CHOICES if c["id"] == "gather")
+    poster = next(c for c in CHOICES if c["id"] == "poster")
+    assert "poster" in poster["en"] and "poster" not in gather["en"]
+    assert gather["en"] != poster["en"]
 
 
 def test_the_strip_says_the_state_instead():

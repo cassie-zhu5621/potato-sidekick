@@ -184,6 +184,31 @@ That walks the whole demo without touching the robot.
 
 ---
 
+## 4c. Your break — the stand runs itself
+
+```bash
+# stop the loop first: Ctrl-C. Both open the same two serial ports.
+python3 -m robot.tools.attract
+```
+
+Walks the whole eight-state cycle on a timer — motion, screen, light and sound
+together — and loops until Ctrl-C. About 36 s a pass. `--gap 1.5` slows it,
+`--once` does a single pass.
+
+A motionless robot on a table reads as broken, and one that only moves when
+somebody works the tablet is invisible from across the hall.
+
+**It is NOT the system.** No camera, no VLM, no watch-spec, nothing recorded —
+authored clips on a timer. The board shows `DEMO LOOP` and the terminal says so
+too, because at a research stand that reading has to be corrected before it is
+made, not after somebody has told a colleague about it. If anyone asks whether
+it is really watching right now: no, and start the real loop to show them.
+
+Ctrl-C releases the joints, so the head does not fight the next person who picks
+the robot up to look underneath.
+
+---
+
 ## 5. When it does not fire
 
 Both controls are on the **laptop's** page (`http://localhost:8000`, LIVE tab,
@@ -229,7 +254,7 @@ The three shipped are:
 |---|---|---|
 | 荷物に触ったら教えて | hands-on the visitor's own bag | "that is mine" is what makes delegating mean anything |
 | 人が集まったら教えて | gathering | ambient; a crowded hall supplies it for free |
-| となりで準備している人がいたら教えて | hands-on equipment at the next table | **the room the stand is actually in** — everyone around is taping up posters and assembling tripods. Costs the visitor nothing to arrange, and makes the point better than a staged event could |
+| ポスターの前で発表がはじまったら教えて | people gathering **in front of a poster** | **the room the stand is actually in** — presentations start at the posters all day. Costs the visitor nothing to arrange, happens whether or not anyone waits for it, and makes the point better than a staged event could. Bound to the poster, which is what keeps it from compiling to the same entry as `gather` |
 
 Keep it to three or fewer. A visitor deciding between two or three things reads
 them; a visitor deciding between five picks the first one.
@@ -257,4 +282,5 @@ call, and `review.html`.
 | the wall is empty | the loop was restarted; the wall is one `attention_log.jsonl` |
 | planning takes 20 s | `net_check`. If FLOOR is high it is Google, and nothing here helps |
 | the live cell flickers black | the stream got moved inside the markup `render()` rewrites — it must stay outside `#app` |
+| the robot fights your hand | you are in `attract` and it has not been Ctrl-C'd, or a state key re-engaged torque. `r` releases |
 | keyboard keys do nothing | fixed 2026-09-09 — the terminal used to be read only under `--no-view`, so with a preview window open `f`, `g` and the state numbers only worked when THAT window had focus. If it regresses, look for an `a.no_view` gate on `stdin_key()` |

@@ -75,17 +75,21 @@ CHOICES = [
      "ja": "人が集まったら教えて",
      "sub": "まわりに人が集まってきたら",
      "en": "tell me if people gather around"},
-    # THE ROOM THE STAND IS ACTUALLY IN. Everyone around is building their own
-    # demo -- taping posters up, kneeling on the floor with a tripod, carrying
-    # equipment past. That is the richest thing happening in this hall, it costs
-    # the visitor nothing to arrange, and it makes the point better than a
-    # staged event could: the robot is watching the room the visitor is standing
-    # in, not a scene set up for it. hands-on again, because it is the relation
-    # tuned hardest and the one those movements actually produce.
-    {"id": "setup",
-     "ja": "となりで準備している人がいたら教えて",
-     "sub": "機材をさわりはじめたら",
-     "en": "tell me if someone starts handling their equipment at the next table"},
+    # THE ROOM THE STAND IS ACTUALLY IN. Presentations start at the posters all
+    # around, all day: someone stands up in front of theirs and two or three
+    # people collect to listen. It costs the visitor nothing to arrange, it will
+    # happen whether or not anyone is waiting for it, and it makes the point
+    # better than a staged event could -- the robot is watching the room the
+    # visitor is standing in, not a scene set up for it.
+    #
+    # Bound to the POSTER, which is what separates it from `gather`: that one is
+    # about people collecting near the visitor, this one about people collecting
+    # somewhere specific. Without the object the two would compile to the same
+    # watch entry and the choice would be a choice of wording only.
+    {"id": "poster",
+     "ja": "ポスターの前で発表がはじまったら教えて",
+     "sub": "だれかが人を集めて話しはじめたら",
+     "en": "tell me if people gather in front of a poster to listen to someone"},
 ]
 
 _EN = {c["id"]: c["en"] for c in CHOICES}
