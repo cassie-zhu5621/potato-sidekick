@@ -191,9 +191,13 @@ That walks the whole demo without touching the robot.
 python3 -m robot.tools.attract
 ```
 
-Walks the whole eight-state cycle on a timer — motion, screen, light and sound
-together — and loops until Ctrl-C. About 36 s a pass. `--gap 1.5` slows it,
-`--once` does a single pass.
+Walks the whole eight-state cycle — motion, screen, light and sound together —
+and loops until Ctrl-C. About 55 s a pass. `--gap 1.5` slows it, `--once` does a
+single pass.
+
+Each beat waits for its clip to finish and *then* holds, so a gesture is never
+cut off mid-turn. Clip lengths are read from the CSVs at startup rather than
+kept in a table, so re-exporting from Blender cannot make the timing stale.
 
 A motionless robot on a table reads as broken, and one that only moves when
 somebody works the tablet is invisible from across the hall.
@@ -282,5 +286,6 @@ call, and `review.html`.
 | the wall is empty | the loop was restarted; the wall is one `attention_log.jsonl` |
 | planning takes 20 s | `net_check`. If FLOOR is high it is Google, and nothing here helps |
 | the live cell flickers black | the stream got moved inside the markup `render()` rewrites — it must stay outside `#app` |
+| in `attract`, the screen changes but nothing moves | `player.start()` is missing — `request()` only records what the player should do; a worker thread feeds the bus. It looks exactly like a servo-power fault and is not |
 | the robot fights your hand | you are in `attract` and it has not been Ctrl-C'd, or a state key re-engaged torque. `r` releases |
 | keyboard keys do nothing | fixed 2026-09-09 — the terminal used to be read only under `--no-view`, so with a preview window open `f`, `g` and the state numbers only worked when THAT window had focus. If it regresses, look for an `a.no_view` gate on `stdin_key()` |

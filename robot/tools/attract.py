@@ -50,6 +50,31 @@ from robot.scs import open_bus
 # Seconds are HOLDS AFTER the clip's own length, not the clip length. Loop
 # clips (S1, S5B, S8) have no end of their own, so their number is the whole
 # time they get.
+def _clip_seconds(clips_dir):
+    """How long each clip runs, read from the CSVs the player will feed.
+
+    Measured rather than declared: the state table says which clip a state
+    plays, not how long it is, and a hand-kept table of durations goes stale the
+    first time anything is re-exported from Blender.
+    """
+    import csv as _csv
+    out = {}
+    for name, spec in ST.STATES.items():
+        if spec.get("loop"):
+            continue                      # no end of its own; `hold` is all it gets
+        path = os.path.join(clips_dir, f"{spec['clip']}.csv")
+        try:
+            with open(path) as fh:
+                rows = list(_csv.DictReader(fh))
+            out[name] = (int(rows[-1]["t_ms"]) - int(rows[0]["t_ms"])) / 1000.0
+        except Exception:
+            out[name] = 0.0
+    return out
+
+
+CLIP_S = {}
+
+
 BEATS = [
     ("S1_IDLE",     6.0,  "asleep"),
     ("S2_LISTEN",   1.2,  "woken -- someone spoke to it"),
@@ -79,6 +104,9 @@ def main(argv=None):
                     help="multiplier on every hold; 1.5 = a slower loop")
     a = ap.parse_args(argv)
 
+    global CLIP_S
+    CLIP_S = _clip_seconds(a.clips)
+
     bus, port = open_bus(a.port, a.baud)
 
     link = None
@@ -102,6 +130,12 @@ def main(argv=None):
         link and link.sfx(name)
 
     player = ClipPlayer(bus, a.clips, on_led=led, on_sfx=sfx)
+    # WITHOUT THIS NOTHING MOVES. `request()` only sets what the player SHOULD be
+    # doing; the clip is fed to the bus by a worker thread that start() spawns.
+    # Leaving it out gave a stand where the M5 screen changed on cue and the head
+    # never moved and no sound played, which looks exactly like a servo-power or
+    # a wiring fault and is neither.
+    player.start()
 
     if link:
         # SAY WHAT THIS IS. A stand that performs the whole cycle with nobody
@@ -127,7 +161,14 @@ def main(argv=None):
                     if hue:
                         link.event("HUE", str(hue).upper())
                 player.request(state)
-                time.sleep(max(0.05, hold * a.gap))
+                # WAIT FOR THE CLIP, THEN HOLD. `hold` is time on top of the
+                # clip's own length, so a beat is never cut off mid-gesture --
+                # sleeping for `hold` alone would interrupt S2's 1.7 s turn
+                # after 1.2 s and the motion would read as a twitch.
+                #
+                # Loop clips (S1, S5B, S8) never finish, so they get `hold` flat.
+                spec_len = CLIP_S.get(state, 0.0)
+                time.sleep(max(0.05, (spec_len + hold) * a.gap))
             passes += 1
             if a.once:
                 break
