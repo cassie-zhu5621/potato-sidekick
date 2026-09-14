@@ -50,10 +50,11 @@ STATE = {"jpg": None, "feed": [], "thumbs": {}, "frames": {},
          # participant is watching. These ask instead for the two things that are
          # actually wanted at that moment -- notice this now, and go look again.
          "pending_finding": False, "pending_resweep": False,
-         # THE EXHIBITION TABLET (webui/booth.py). `booth_choice_ja` is the
-         # Japanese the visitor tapped, kept so every later screen can echo
-         # back what THEY said rather than the English the planner got.
-         "pending_ok": False, "booth_choice_ja": "",
+         # THE PARTICIPANT'S TABLET (webui/booth.py). `heard` is what Whisper
+         # just returned -- shown while they are still speaking, so a misread is
+         # visible in time to say it again -- and `request` is the sentence the
+         # flow accepted, which every later screen echoes back.
+         "pending_ok": False, "heard": "", "heard_ok": True, "request": "",
          "describe": "", "noticed_n": 0, "flow_state": "", "plan_pending": False,
          "aimed_pan": None,
          # What the participant called it. Typed here, sent to the board as
@@ -68,7 +69,7 @@ STATE = {"jpg": None, "feed": [], "thumbs": {}, "frames": {},
          "pending_pan": None,                           # developer re-aim
          "pan_now": None, "pan_scores": [],             # where it looks / sweep scores
          "pending_context": None}
-from webui.booth import CHOICES, PAGE as BOOTH_PAGE, booth_state, english_for
+from webui.booth import PAGE as BOOTH_PAGE, booth_state
 
 LOCK = threading.Lock()
 ARGS = None
@@ -732,20 +733,6 @@ class H(BaseHTTPRequestHandler):
             with LOCK:
                 STATE["pending_finding" if self.path == "/finding"
                       else "pending_resweep"] = True
-            self._send(200, "application/json", b'{"ok": true}')
-        elif self.path == "/booth/choose":
-            # STRAIGHT THROUGH THE DOOR A SPOKEN REQUEST USES. The loop drains
-            # `pending_context` into stt.manual(), which is the same path
-            # Whisper's output takes -- so the tap replaces the speaking and
-            # nothing else. The planner really compiles the sentence.
-            raw = self.rfile.read(int(self.headers.get("Content-Length", 0))
-                                  ).decode("utf-8", "ignore").strip()
-            en = english_for(raw)
-            if en:
-                ja = next((c["ja"] for c in CHOICES if c["id"] == raw), "")
-                with LOCK:
-                    STATE["pending_context"] = en
-                    STATE["booth_choice_ja"] = ja
             self._send(200, "application/json", b'{"ok": true}')
         elif self.path == "/booth/ok":
             # EITHER SCREEN TAKES IT. The CoreS3 sends IN OK; this is the same

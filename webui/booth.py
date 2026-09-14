@@ -1,36 +1,32 @@
-"""booth.py — the iPad the visitor touches, at an exhibition.
+"""booth.py — the tablet the participant watches, in the lab.
 
-WHAT THIS IS FOR. The study runs in a quiet room with a moderator, a briefing
-and seven minutes. A trade-show stand has none of those: strangers arrive, stay
-ninety seconds and leave, the hall is at 75 dB, and the visitor reads Japanese
-while the system speaks English. This page is the whole visitor-facing interface
-under those conditions.
+WHAT THIS IS FOR. The robot speaks the interaction: motion, light, sound and a
+face. None of that says WHICH WAY IT IS LOOKING with any precision, and that is
+the one question a participant has from the moment the sweep starts. This page
+answers it, and nothing else about the robot changes to make it possible.
 
-THE DIVISION OF LABOUR, and it is the reason this file is small:
+    the robot   motion, light, sound, a face, and the request itself
+    this page   which way it is looking, and the report afterwards
 
-    the robot   motion, light, sound, a face          -- NO language at all
-    this page   Japanese, and every touch             -- ALL the language
-
-Nothing about the robot changes for the exhibition. Its screen keeps the English
-words and the faces it had in the study, and the faces are what carry it: a
-sleeping face and a woken one need no translation. Everything a visitor has to
-READ is here, so translating the stand means translating one file.
+THE REQUEST IS NOT ON THIS PAGE. It is spoken, holding the button on the robot,
+in the participant's own words. The exhibition build (demo-expo-2026) put three
+tappable sentences here instead, because a stranger at a stand has ninety
+seconds and no briefing; a participant has a moderator and seven minutes, and a
+menu would decide for them the one thing the study is asking them to decide.
+What the page shows during that moment is what Whisper HEARD -- large, as it
+lands -- so a misread is visible while it can still just be said again, instead
+of being discovered three states later when the head turns the wrong way.
 
 THE SCREENS. Fewer than there are states, on purpose -- the strip along the top
-carries the state, and a page swap is reserved for a change in what the visitor
-can DO:
+carries the state, and a page swap is reserved for a change in what the
+participant can DO:
 
-    sleep    a sleeping face and one line asking to be touched. A stand with a
-             list of options on it is a kiosk; a stand with something asleep on
-             it is a thing you want to wake -- and waking it is how everything
-             else here starts, so the tap has a consequence on both screens at
-             once, which is what teaches the gesture.
-    choose   three Japanese sentences. Tapping one posts the ENGLISH sentence
-             through the same door a spoken request uses (stt.manual), so the
-             planner really compiles it -- the tap replaces the speaking, not
-             the pipeline. Waking the robot does NOT leave this screen: the tap
-             on its head is the move that brings a visitor here, and taking the
-             buttons away at that moment is the one thing the page must not do.
+    sleep    a sleeping face and one line. Nothing is asked of the tablet here;
+             the way in is the button on the robot, and the page says so.
+    listen   the sentence, as Whisper returns it. Rejected text is shown too,
+             marked -- the robot is about to perform not having understood, and
+             a participant who can read what it thought it heard understands
+             that performance instead of being puzzled by it.
     room     scanning AND watching, which used to be two -- and the nod between
              them, which is 1.7 s and does not deserve a page of its own. Five
              stations fill in as the head captures them, the planner's boxes and
@@ -38,61 +34,23 @@ can DO:
              head is corrected. The watched direction is the LIVE camera, not
              the photograph taken during the sweep; tapping it fills the screen
              with the rule beside it, tapping again puts it back. The sixth cell
-             of the 3x2 grid holds the rule itself. The 5-20 s VLM wait becomes
-             the part people point at.
+             of the 3x2 grid holds the rule itself.
     notice   the same prompt as the robot's own screen, either of which takes
              the OK.
     report   AFTER OK THE TABLET STOPS FOLLOWING THE ROBOT. The robot goes
-             straight back to watching -- right, it has a job -- but the visitor
-             is owed the report they just asked for, and the storyboard takes
-             another 6-45 s to narrate it. Following the robot back to the room
-             grid threw that away and made OK look like it had cancelled
-             something. The page waits here, on its own, until the story count
-             rises, then shows that one story.
-    wall     every story of the day, reachable from the choose screen -- which
-             is where a visitor stands with nothing to do, and where the next
-             one arrives.
+             straight back to watching -- right, it has a job -- but the
+             participant is owed the report they just asked for, and the
+             storyboard takes another 6-45 s to narrate it. Following the robot
+             back to the room grid threw that away and made OK look like it had
+             cancelled something. The page waits here, on its own, until the
+             story count rises, then shows that one story.
+    wall     every story of the session, reachable from any idle moment.
 
 Polling, not sockets: 200 ms on a LAN is imperceptible and the codebase already
 polls. The study page's 1200 ms was too slow here -- the prompt has to land with
 the chirp, and 1.2 s of lag reads as two separate machines.
 """
 from __future__ import annotations
-
-# id -> (Japanese for the visitor, English for the planner)
-#
-# BOTH are about an object the visitor puts down themselves, because "that is
-# mine" is what makes delegating it mean anything. They differ in the relation,
-# not the object: hands-on is the one tuned hardest and needs someone to act,
-# gathering is ambient and a crowded hall supplies it for free -- a slow deliberate
-# demo and a fast one, and the visitor picks without being told that is the choice.
-CHOICES = [
-    {"id": "touch",
-     "ja": "荷物に触ったら教えて",
-     "sub": "だれかが手を伸ばしたら",
-     "en": "tell me if someone touches my bag"},
-    {"id": "gather",
-     "ja": "人が集まったら教えて",
-     "sub": "まわりに人が集まってきたら",
-     "en": "tell me if people gather around"},
-    # THE ROOM THE STAND IS ACTUALLY IN. Presentations start at the posters all
-    # around, all day: someone stands up in front of theirs and two or three
-    # people collect to listen. It costs the visitor nothing to arrange, it will
-    # happen whether or not anyone is waiting for it, and it makes the point
-    # better than a staged event could -- the robot is watching the room the
-    # visitor is standing in, not a scene set up for it.
-    #
-    # Bound to the POSTER, which is what separates it from `gather`: that one is
-    # about people collecting near the visitor, this one about people collecting
-    # somewhere specific. Without the object the two would compile to the same
-    # watch entry and the choice would be a choice of wording only.
-    {"id": "poster",
-     "ja": "ポスターの前で発表がはじまったら教えて",
-     "sub": "だれかが人を集めて話しはじめたら",
-     "en": "tell me if people gather in front of a poster to listen to someone"},
-]
-
-_EN = {c["id"]: c["en"] for c in CHOICES}
 
 # The relation vocabulary, short. Same ids and same words the developer page
 # uses (webui.server.REL_NAMES); English on purpose -- these are the system's
@@ -112,13 +70,13 @@ REL_NAMES = {
 # the eye to the room instead of the screen -- so the strip shows a looking mark
 # rather than inventing an expression the robot does not wear.
 FACES = [
-    ("S1_IDLE",     "-_-",    "ねてる"),
-    ("S2_LISTEN",   "._.",    "きづいた"),
-    ("S3_ACK",      "^o^",    "わかった"),
-    ("S4_PLAN",     "\u30fb\u30fb\u30fb",    "みてる"),
-    ("S5B_TRACK",   "o_o",    "みはり"),
-    ("S6_FINETUNE", ">_<",    "ちがう"),
-    ("S7b",         "\\^o^/", "よんでる"),
+    ("S1_IDLE",     "-_-",    "asleep"),
+    ("S2_LISTEN",   "._.",    "listening"),
+    ("S3_ACK",      "^o^",    "got it"),
+    ("S4_PLAN",     "\u30fb\u30fb\u30fb",    "looking"),
+    ("S5B_TRACK",   "o_o",    "watching"),
+    ("S6_FINETUNE", ">_<",    "not that"),
+    ("S7b",         "\\^o^/", "calling"),
 ]
 
 # states that light the same lamp
@@ -129,11 +87,6 @@ def face_key(state):
     """Which lamp in the strip is lit for this state."""
     state = _FACE_OF.get(state, state)
     return state if any(k == state for k, _f, _l in FACES) else "S1_IDLE"
-
-
-def english_for(choice_id):
-    """The sentence the planner is given. None for an id we did not write."""
-    return _EN.get(str(choice_id or "").strip())
 
 
 # --------------------------------------------------------------------------- #
@@ -181,12 +134,12 @@ def booth_state(STATE, feed_records, sweep_meta):
         # everything else here starts.
         phase = "sleep"
     else:
-        # S2_LISTEN LANDS HERE. The robot has lifted its head because the
-        # visitor touched it, and the choice is what they need next -- so the
-        # tap is exactly what brings the two sentences up. Sending them to a
-        # "woken" screen instead would take the page one step further from the
-        # thing they came to do.
-        phase = "choose"
+        # S2_LISTEN AND S8_ERROR LAND HERE, and they want the same screen: the
+        # sentence. While the button is held there is nothing yet and the page
+        # says it is listening; when Whisper returns, the words appear; and if
+        # they were rejected, the marked text is exactly what explains the
+        # performance the robot is about to give.
+        phase = "listen"
 
     # WHICH FRAME IS RED: the station nearest where it is ACTUALLY AIMED, not
     # the one the sweep scored highest. They agree until the visitor taps the
@@ -220,8 +173,12 @@ def booth_state(STATE, feed_records, sweep_meta):
         "state": now,
         "faces": FACES,
         "face": face_key(now),
-        "choices": CHOICES,
-        "request_ja": STATE.get("booth_choice_ja") or "",
+        # HEARD vs REQUEST. The first is the microphone's last word and belongs
+        # only to the listening screen; the second is what the flow accepted and
+        # is what every later screen echoes back.
+        "heard": STATE.get("heard") or "",
+        "heard_ok": bool(STATE.get("heard_ok", True)),
+        "request": STATE.get("request") or "",
         "shots": shots,
         "chosen_pan": chosen,
         # THE WATCH-SPEC, in the developer page's own vocabulary. The grid has
@@ -251,13 +208,13 @@ def booth_state(STATE, feed_records, sweep_meta):
     }
 
 
-PAGE = """<!doctype html><html lang=ja><head><meta charset=utf-8>
+PAGE = """<!doctype html><html lang=en><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1,user-scalable=no,viewport-fit=cover">
 <meta name=apple-mobile-web-app-capable content=yes>
-<title>ポテト</title><style>
+<title>NoticeBot</title><style>
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 body{margin:0;background:#141414;color:#f2f0ea;display:flex;flex-direction:column;
-  font-family:-apple-system,"Hiragino Sans","Noto Sans JP",sans-serif;
+  font-family:-apple-system,"SF Pro Text",Helvetica,Arial,sans-serif;
   height:100vh;overflow:hidden;user-select:none}
 
 /* THE STATE STRIP. Small, at the top, always there. A state change is worth a
@@ -291,20 +248,34 @@ h1{font-weight:600;font-size:clamp(26px,3.4vh,40px);line-height:1.3;margin:0;let
    choice buttons stayed at 16px however large the number was set. Longhands
    only; the family comes down from body by inheritance anyway.
 
-   THE CHOICE IS THE WHOLE SCREEN. A visitor decides from a metre away,
-   standing, in a hall, in about two seconds -- so the sentence is set at a
-   size that is readable at that distance and centred, and the card is the
-   touch target rather than the text inside it. clamp() keeps it right on an
-   iPad mini and a 12.9 alike without a media query. */
-.card{background:#1d1d1a;border:3px solid #33332e;border-radius:28px;
-  padding:20px;color:#f2f0ea;text-align:center;
-  font-weight:800;font-size:clamp(44px,min(8.5vw,10vh),120px);line-height:1.22;
+   THE SENTENCE IS THE WHOLE SCREEN. It is the only text in the study the
+   participant wrote themselves, and the one thing they must be able to check
+   before the robot acts on it -- so it is set large enough to read at a glance
+   from where they are sitting, and centred with nothing beside it. clamp()
+   keeps it right on an iPad mini and a 12.9 alike without a media query.
+   NOT a touch target: nothing on this screen is tappable, because the way to
+   correct a misread is to hold the button and say it again. */
+.heard{background:#1d1d1a;border:3px solid #33332e;border-radius:28px;
+  padding:28px;color:#f2f0ea;text-align:center;
+  font-weight:800;font-size:clamp(34px,min(6.4vw,8vh),86px);line-height:1.24;
   letter-spacing:.01em;
   flex:1;display:flex;flex-direction:column;align-items:center;
-  justify-content:center;gap:14px}
-.card:active{background:#cfe33a;color:#141414;border-color:#cfe33a;
-  transform:scale(.985)}
-.card small{font-weight:400;font-size:clamp(17px,2.4vw,32px);color:#8a867d}
+  justify-content:center;gap:18px}
+/* REJECTED TEXT IS SHOWN, NOT HIDDEN. The robot is about to perform not having
+   understood; a participant who can read what it thought it heard reads that
+   performance correctly instead of wondering what went wrong. */
+.heard.no{border-color:#5a3230;color:#c88e88}
+.heard small{font-weight:400;font-size:clamp(15px,2vw,26px);color:#8a867d;
+  letter-spacing:.04em}
+.heard.no small{color:#a2625c}
+/* WAITING FOR THE FIRST WORD. Three dots that breathe, so a held button with
+   nothing said into it yet still looks like a machine that is receiving. */
+.lst{font-family:ui-monospace,monospace;color:#6f6c65;
+  font-size:clamp(30px,5vw,64px);letter-spacing:.3em}
+.lst i{font-style:normal;animation:blink 1.4s ease-in-out infinite}
+.lst i:nth-child(2){animation-delay:.22s}
+.lst i:nth-child(3){animation-delay:.44s}
+@keyframes blink{0%,100%{opacity:.2}50%{opacity:1}}
 .card:active small{color:#3a3a20}
 
 .grid{flex:1;display:grid;grid-template-columns:repeat(3,1fr);gap:12px;min-height:0}
@@ -356,7 +327,8 @@ h1{font-weight:600;font-size:clamp(26px,3.4vh,40px);line-height:1.3;margin:0;let
 @keyframes breathe{0%,100%{opacity:.55}50%{opacity:1}}
 @keyframes zzz{0%,100%{opacity:.15;transform:translateY(4px)}
                50%{opacity:.9;transform:translateY(-6px)}}
-.stap{font-size:clamp(20px,2.6vw,34px);color:#8a867d}
+.stap{font-size:clamp(20px,2.6vw,34px);color:#8a867d;text-align:center;
+  line-height:1.5}
 
 .waitbox{flex:1;display:flex;flex-direction:column;align-items:center;
   justify-content:center;gap:22px}
@@ -438,13 +410,13 @@ h1{font-weight:600;font-size:clamp(26px,3.4vh,40px);line-height:1.3;margin:0;let
 <div id=top><div id=strip></div>
   <div class="f wallbtn" id=wb onpointerdown="wall()"></div></div>
 <div id=app></div>
-<div class=hint id=hint>もう一度タップでもどる</div>
+<div class=hint id=hint>tap again to go back</div>
 <div id=veil><div class=pop>
-  <h2 id=pt>気づきました</h2><p id=pd></p>
+  <h2 id=pt>I noticed something</h2><p id=pd></p>
   <button class=ok onpointerdown="ok()">OK</button>
 </div></div>
 <script>
-let S={phase:'choose'},sent=0;
+let S={phase:'sleep'},sent=0;
 
 // THE TABLET STOPS FOLLOWING THE ROBOT AFTER OK. The robot goes straight back
 // to watching -- that is right, it has a job -- but the visitor is owed the
@@ -491,10 +463,6 @@ function place(){
 }
 addEventListener('resize',place);
 
-async function pick(id){
-  if(Date.now()-sent<1500) return; sent=Date.now();
-  await fetch('/booth/choose',{method:'POST',body:id});
-}
 async function ok(){
   if(Date.now()-sent<800) return; sent=Date.now();
   document.getElementById('veil').classList.remove('on');
@@ -515,7 +483,7 @@ function specInner(){
     (k?`<span class=op>${op}</span>`:'')+
     `<span class="rel${w.truth[String(id)]?' t':''}">${esc(S.rel_names[id]||id)}</span>`
   ).join('');
-  return `<span class=lb>${w.sat?'いま成立':'これを待っています'}</span>
+  return `<span class=lb>${w.sat?'TRUE NOW':'WAITING FOR'}</span>
     <div class=row>${chips}${w.on?`<span class=op>on</span>
       <span class=obj>${esc(w.on)}</span>`:''}</div>`;
 }
@@ -551,7 +519,7 @@ function strip(){
     ([k,f,l])=>`<div class="f${k===S.face?' on':''}">${esc(f)}<b>${esc(l)}</b></div>`
   ).join('');
   const w=document.getElementById('wb');
-  w.innerHTML=`\u2630 ${S.n_stories||0}<b>きろく</b>`;
+  w.innerHTML=`\u2630 ${S.n_stories||0}<b>stories</b>`;
   w.style.visibility = MODE==='wall' ? 'hidden' : 'visible';
 }
 
@@ -562,7 +530,7 @@ function story1(s){
   const wide=(s.shots||1)>1;
   return `<div class=story>
     <div class=pan><img src="/frame/${esc(s.frame||s.thumb)}"></div>
-    ${wide?'<div class=swipe>\u2190 よこにスワイプ</div>':''}
+    ${wide?'<div class=swipe>\u2190 swipe sideways</div>':''}
     <p>${esc(s.note)}</p><span>${esc(s.time)}</span></div>`;
 }
 
@@ -570,21 +538,22 @@ function render(){
   strip();
   const a=document.getElementById('app');
   if(MODE==='wall'){
-    a.innerHTML=`<div><h1>これまでに気づいたこと</h1>
-      <div class=sub>${(S.stories||[]).length} 件</div></div>
+    const n=(S.stories||[]).length;
+    a.innerHTML=`<div><h1>What it has noticed</h1>
+      <div class=sub>${n} ${n===1?'story':'stories'} so far</div></div>
       <div id=stories>`+(S.stories||[]).map(story1).join('')
-      +`</div><button class=ok onpointerdown="back()">もどる</button>`;
+      +`</div><button class=ok onpointerdown="back()">back</button>`;
     return;
   }
   if(MODE==='report'){
     const fresh=(S.n_stories||0)>WAIT_FROM ? S.stories[0] : null;
-    a.innerHTML=`<div><h1>${fresh?'これを見つけました':'まとめています'}</h1>
-      <div class=sub>${esc(S.request_ja)}</div></div>
+    a.innerHTML=`<div><h1>${fresh?'Here is what it saw':'Writing it up'}</h1>
+      <div class=sub>${esc(S.request)}</div></div>
       <div class=grow>`+(fresh
-        ? story1(fresh)+`<button class=ok onpointerdown="back()">とじる</button>`
+        ? story1(fresh)+`<button class=ok onpointerdown="back()">close</button>`
         : `<div class=waitbox>
              <div class=wface>\uff08\u30fb\u03c9\u30fb\uff09</div>
-             <div class=wtxt>まとめています…</div>
+             <div class=wtxt>writing it up\u2026</div>
              <div class=wbar><i></i></div>
            </div>`)+`</div>`;
     return;
@@ -592,16 +561,23 @@ function render(){
   if(S.phase==='sleep'){
     a.innerHTML=`<div class=sleep>
         <div class=sface>(-_-)<i>z z z</i></div>
-        <div class=stap>あたまに そっとさわってください</div>
+        <div class=stap>hold the button on the robot<br>and tell it what to watch for</div>
       </div>`;
     return;
   }
-  if(S.phase==='choose'){
-    a.innerHTML=`<div><h1>なにを見ていてほしい？</h1>
-      <div class=sub>ポテトの頭にさわると、起きます</div></div>
-      <div class=grow style="gap:18px">`+S.choices.map(c=>
-        `<div class=card onpointerdown="pick('${c.id}')">${esc(c.ja)}
-           <small>${esc(c.sub)}</small></div>`).join('')+`</div>`;
+  if(S.phase==='listen'){
+    // WHAT IT HEARD, WHILE THERE IS STILL TIME TO SAY IT AGAIN. Empty means the
+    // button is down and nothing has come back yet; rejected text is shown and
+    // marked, because the robot is about to perform not understanding and this
+    // is what makes that performance legible rather than puzzling.
+    const t=S.heard||'';
+    a.innerHTML=`<div><h1>${t?(S.heard_ok?'I heard':'I did not catch that'):'Listening'}</h1>
+      <div class=sub>keep holding the button while you speak</div></div>
+      <div class=grow>
+        <div class="heard${t&&!S.heard_ok?' no':''}">`+(t
+          ? esc(t)+(S.heard_ok?'':'<small>hold the button and say it again</small>')
+          : `<div class=lst><i>\u25cf</i><i>\u25cf</i><i>\u25cf</i></div>`)
+        +`</div></div>`;
   } else {
     // ONE SCREEN FOR SCANNING AND FOR WATCHING. The only question a visitor has
     // in either is which way it is looking, and the grid answers it the whole
@@ -609,13 +585,13 @@ function render(){
     // plan, and it moves when the head is corrected. "tracking..." over an empty
     // page told them nothing the robot in front of them was not already saying.
     const done = S.chosen_pan!=null;
-    a.innerHTML=`<div><h1>${done?'ここを見張っています':'部屋を見ています'}</h1>
-      <div class=sub>${esc(S.request_ja)}</div></div>
+    a.innerHTML=`<div><h1>${done?'Watching this way':'Looking around the room'}</h1>
+      <div class=sub>${esc(S.request)}</div></div>
       <div class=grid>${cells()}</div>
       <div class=bar>${done
-        ? (S.noticed? S.noticed+' 件 見つけました ・ ' : '')
-          + 'ちがう方を見てほしいときは、頭をさわってください'
-        : '<span class=dot></span>5方向を撮って、いま考えています'}</div>`;
+        ? (S.noticed? S.noticed+(S.noticed===1?' story':' stories')+' so far \u00b7 ' : '')
+          + 'touch its head if you want it to look somewhere else'
+        : '<span class=dot></span>five directions taken \u2014 deciding which one to watch'}</div>`;
   }
 }
 

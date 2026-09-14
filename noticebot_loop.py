@@ -622,6 +622,16 @@ def main():
     flow = SessionFlow()
     transcripts, ui_events = [], []
 
+    # WHAT WHISPER HEARD, FOR THE TABLET. The request arrives by voice on this
+    # build, so the tablet's listening screen has to show the sentence as it
+    # lands -- a misread that is visible is a misread the participant can just
+    # say again, and one that is not visible is only discovered when the sweep
+    # goes the wrong way. Held here and published from the one publish block
+    # below rather than written straight into UI.STATE, because on_transcript
+    # runs on the STT thread and every other field the tablet reads is written
+    # from the loop thread. One writer, no lock to get wrong.
+    heard = {"text": "", "ok": True}
+
     def on_transcript(text, source):
         # The source is carried, not flattened. Both go through the same
         # acceptance rule in session_flow, but a researcher's typo must not send
@@ -630,8 +640,9 @@ def main():
         # Published to the page HERE rather than after the plan is accepted: the
         # moment you most need to read what Whisper heard is the moment it was
         # rejected and the robot went to S8, and at that point no plan ever runs.
+        ok, why = transcript_usable(text)
+        heard["text"], heard["ok"] = (text or ""), bool(ok)
         if view is not None:
-            ok, why = transcript_usable(text)
             view.transcript = (text if ok
                                else f"{text or '(silence)'}   [rejected: {why}]")
         transcripts.append(("typed" if source == "manual" else "transcript", text))
@@ -1469,38 +1480,27 @@ def main():
                     candidate_gate["busy"] = False
             while pending:
                 line = pending.pop(0)
-                if "PTT_DOWN" in line:      events.append("ptt_down")
+                if "PTT_DOWN" in line:
+                    # A NEW TURN CLEARS THE OLD SENTENCE. Without this the
+                    # tablet keeps showing the previous request through the
+                    # whole of the next person's speaking, which reads as the
+                    # robot having already decided what they were going to say.
+                    heard["text"], heard["ok"] = "", True
+                    events.append("ptt_down")
                 elif "PTT_UP" in line:      events.append("ptt_up")
                 elif "IN OK" in line:       events.append("ok")
                 elif "IN STOP" in line:     events.append("stop")
                 elif "BODYTAP" in line:
-                    # ONE GESTURE, TWO MEANINGS, DECIDED BY WHAT IT IS DOING.
+                    # ONE GESTURE, ONE MEANING: "not that one." The flow turns
+                    # it into S6 while watching and ignores it everywhere else.
                     #
-                    # Watching -> "not that one" (the flow turns it into S6, and
-                    # that has been the tap's job since the study build).
-                    # Asleep   -> "wake up and look at me".
-                    #
-                    # Both are the same sentence -- put your attention where I am
-                    # pointing it -- which is why one touch can carry them.
-                    #
-                    # The wake is played FROM HERE rather than through the flow,
-                    # like the name greeting above it, because it starts and ends
-                    # in S1_IDLE: `arm_next` sends S2 home when it is done, so the
-                    # flow's state and the player's agree again the moment the
-                    # clip ends, and nothing in between can open a finding. A
-                    # flow state for it would buy nothing and cost a branch in
-                    # every rule that tests for idle.
-                    if flow.state == "S1_IDLE" and link:
-                        # S2_LISTEN is authored as nod -42 -> +53: it lifts out of
-                        # exactly the bow S1_IDLE holds. It is already the
-                        # picture of being woken.
-                        ctxd["hush_heard_until"] = time.time() + 2.4
-                        link.ui("hello")
-                        player.request("S2_LISTEN")
-                        player.arm_next("S1_IDLE")
-                        print("[tap] woken from idle")
-                    else:
-                        events.append("tap")
+                    # The exhibition build (demo-expo-2026) also woke the robot
+                    # with this tap, because there the tap was the only way in.
+                    # Here the way in is the button and a spoken sentence, so the
+                    # wake is gone: a gesture that means two things needs saying
+                    # out loud, and a study should not spend its briefing on a
+                    # second meaning nobody needs.
+                    events.append("tap")
             while transcripts:
                 kind, text = transcripts.pop(0)
                 events.append(f"{kind}:{text}")
@@ -1829,6 +1829,16 @@ def main():
                         # stayed "" and the tablet showed the choose screen for
                         # the whole session, sweep and all.
                         UI.STATE["flow_state"] = flow.state
+                        # THE SENTENCE, TWICE, BECAUSE THEY ARE DIFFERENT THINGS.
+                        # `heard` is what Whisper just returned, wrong or right,
+                        # and it is what the listening screen shows so a misread
+                        # can be said again on the spot. `request` is the one the
+                        # flow ACCEPTED, and it is what every later screen echoes
+                        # -- the report must name the request it answers, not the
+                        # last thing the microphone picked up.
+                        UI.STATE["heard"] = heard["text"]
+                        UI.STATE["heard_ok"] = heard["ok"]
+                        UI.STATE["request"] = ctxd.get("request") or ""
                         UI.STATE["plan_pending"] = bool(
                             getattr(flow, "plan_pending", False))
                         UI.STATE["noticed_n"] = int(getattr(flow, "noticed", 0))

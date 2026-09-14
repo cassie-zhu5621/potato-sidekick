@@ -1,9 +1,11 @@
-"""The exhibition tablet: one state, two screens, and no dead ends.
+"""The tablet: one state, one set of screens, and no dead ends.
 
-The stand's whole interface is an iPad, and the robot is unchanged -- English
-words and faces, no Japanese anywhere on it. That division only works if the
-tablet and the robot never disagree about which moment they are in, so `phase`
-is decided ONCE, in the loop, and both surfaces read it.
+This file is the part that is TRUE OF BOTH BUILDS -- the exhibition stand
+(demo-expo-2026, a Japanese menu) and the study (this branch, a spoken request).
+What differs between them lives in test_booth_listen.py; what is here is the
+machinery underneath: the phase is decided ONCE, in the loop, both surfaces read
+it, the red frame follows where the head is actually aimed, and an `arm_next`
+belongs to the clip that was playing when it was armed.
 """
 from __future__ import annotations
 
@@ -18,7 +20,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 import webui.server as W
-from webui.booth import CHOICES, booth_state, english_for
+from webui.booth import booth_state
 
 
 def _st(**kw):
@@ -73,52 +75,15 @@ def test_the_loop_publishes_where_it_is_aimed():
 
 
 # ------------------------------------------------------ the visitor's tap --
-def test_the_tap_sends_english_to_the_planner():
-    """The visitor reads Japanese; the system is unchanged and reads English."""
-    for c in CHOICES:
-        assert english_for(c["id"]) == c["en"]
-        assert c["en"].isascii(), "the planner never sees Japanese"
-        assert not c["ja"].isascii(), "the visitor never sees English"
-
-
-def test_an_id_we_did_not_write_installs_nothing():
-    assert english_for("'; DROP") is None
-    assert english_for("") is None
-    assert english_for(None) is None
-
-
-def test_asleep_is_a_face_and_waking_it_is_what_brings_up_the_choice():
-    """A stand with a list of options on it is a kiosk; a stand with something
-    sleeping on it is a thing you want to wake. And waking it is how everything
-    else starts, so the tap has a consequence on both screens at once -- which
-    is what teaches the gesture."""
+def test_asleep_is_a_face_and_it_says_where_the_way_in_is():
+    """Idle is a sleeping face, not a menu, on both builds. What the line under
+    it asks for is the one thing that differs, so this only checks that a line
+    is there and that S2 leaves the sleep screen at all."""
     from webui.booth import PAGE
     assert booth_state(_st(flow_state="S1_IDLE"), [], None)["phase"] == "sleep"
     assert booth_state(_st(flow_state=""), [], None)["phase"] == "sleep"
-    assert booth_state(_st(flow_state="S2_LISTEN"), [], None)["phase"] == "choose"
-    assert "あたまに そっとさわってください" in PAGE
-    assert "class=sface" in PAGE
-
-
-def test_the_third_task_is_the_room_the_stand_is_in():
-    """Presentations start at the posters all around, all day. It costs the
-    visitor nothing to arrange, it happens whether or not anyone is waiting for
-    it, and it makes the point better than a staged event could."""
-    ids = [c["id"] for c in CHOICES]
-    assert ids == ["touch", "gather", "poster"]
-    poster = CHOICES[-1]
-    assert "poster" in poster["en"]
-    assert poster["en"].isascii() and not poster["ja"].isascii()
-
-
-def test_the_two_crowd_tasks_are_not_the_same_request():
-    """`gather` is people collecting near the visitor; `poster` is people
-    collecting somewhere SPECIFIC. Without the object they would compile to the
-    same watch entry and the choice would be a choice of wording only."""
-    gather = next(c for c in CHOICES if c["id"] == "gather")
-    poster = next(c for c in CHOICES if c["id"] == "poster")
-    assert "poster" in poster["en"] and "poster" not in gather["en"]
-    assert gather["en"] != poster["en"]
+    assert booth_state(_st(flow_state="S2_LISTEN"), [], None)["phase"] != "sleep"
+    assert "class=sface" in PAGE and "class=stap" in PAGE
 
 
 def test_the_strip_says_the_state_instead():
@@ -126,7 +91,7 @@ def test_the_strip_says_the_state_instead():
     from webui.booth import FACES, face_key
     s = booth_state(_st(flow_state="S2_LISTEN"), [], None)
     assert s["face"] == "S2_LISTEN"
-    assert s["phase"] == "choose", "the strip changes, the page does not"
+    assert s["phase"] == "listen", "the strip changes, the page does not"
     assert [f[0] for f in s["faces"]][0] == "S1_IDLE"
 
 
@@ -155,17 +120,18 @@ def test_every_state_lights_exactly_one_lamp():
         assert face_key(state) in keys, state
 
 
-def test_the_choice_is_set_large_enough_to_read_standing_up():
-    """Driven off the WIDTH, which is the dimension a two-line Japanese
-    sentence actually runs out of, with a floor high enough that a small
-    laptop window still shows it big -- that window is where it gets checked."""
+def test_the_sentence_is_set_large_enough_to_read_from_a_seat():
+    """Driven off the WIDTH, which is the dimension a sentence actually runs
+    out of, with a floor high enough that a small laptop window still shows it
+    big -- that window is where it gets checked, and the reason the size was
+    wrong for two rounds is that the number in the source looked right."""
     import re
     from webui.booth import PAGE
     css = re.sub(r"/\*.*?\*/", "", PAGE, flags=re.S)
-    card = re.search(r"\.card\{[^}]*\}", css).group(0)
-    size = re.search(r"font-size:clamp\((\d+)px", card)
-    assert size and int(size.group(1)) >= 44, card
-    assert "text-align:center" in card
+    block = re.search(r"\.heard\{[^}]*\}", css).group(0)
+    size = re.search(r"font-size:clamp\((\d+)px", block)
+    assert size and int(size.group(1)) >= 30, block
+    assert "text-align:center" in block
 
 
 def test_app_is_laid_out_once():
@@ -222,8 +188,10 @@ def test_an_override_belongs_to_the_clip_that_was_playing_when_it_was_armed():
 
 def test_every_caller_requests_first_and_arms_second():
     src = open(os.path.join(ROOT, "noticebot_loop.py")).read()
-    for a, b in [('player.request("S3_ACK")', 'player.arm_next("S1_IDLE")'),
-                 ('player.request("S2_LISTEN")', 'player.arm_next("S1_IDLE")')]:
+    # The S2_LISTEN pair belonged to the exhibition build's wake tap, which this
+    # branch does not have. S3_ACK is the one that broke in BOTH directions on
+    # 2026-08-18 and it is the one worth guarding.
+    for a, b in [('player.request("S3_ACK")', 'player.arm_next("S1_IDLE")')]:
         i = src.index(a)
         assert b in src[i:i + 200], f"{a} must be followed by {b}"
 
@@ -466,18 +434,17 @@ def test_the_page_and_the_poll_serve(tmp_path):
     page = urllib.request.urlopen(base + "/booth", timeout=5).read().decode()
     assert "user-scalable=no" in page, "an iPad will pinch-zoom the layout apart"
     assert "setInterval(poll,200)" in page, "1200ms lags visibly behind the chirp"
-    assert 'lang=ja' in page
+    assert 'lang=en' in page
 
-    # The Japanese lives in the POLL, not in the page. One reload is not needed
-    # to change the wording, and more importantly the page holds no copy of the
-    # sentences that could drift from the ones the planner is given.
-    assert "荷物に触ったら教えて" not in page
-    assert "となりで準備している人がいたら教えて" not in page
+    # THE SENTENCE LIVES IN THE POLL, NOT IN THE PAGE. The page holds no copy of
+    # any request, so nothing on the tablet can drift from what the planner was
+    # actually given -- which is the property that matters whether the sentence
+    # came from a menu or from a microphone.
     raw = urllib.request.urlopen(base + "/booth.json", timeout=5).read()
-    assert "荷物に触ったら教えて" in raw.decode("utf-8")
     data = json.loads(raw)
-    assert data["phase"] in ("sleep", "choose", "room", "notice")
-    assert [c["id"] for c in data["choices"]] == [c["id"] for c in CHOICES]
+    assert data["phase"] in ("sleep", "listen", "room", "notice")
+    assert "heard" in data and "request" in data
+    assert "choices" not in data, "the menu belongs to the exhibition build"
 
 
 def test_the_tablet_address_is_printed_at_startup(capsys):
@@ -533,12 +500,16 @@ def test_the_tablet_fields_are_published_on_a_normal_run():
         assert f'UI.STATE["{field}"]' in src[pub:branch], field
 
 
-# ------------------------------------------------- one gesture, two meanings --
-def test_a_tap_wakes_it_from_idle_and_corrects_it_while_watching():
+# ----------------------------------------------------- one gesture, one job --
+def test_the_tap_only_ever_means_not_that_one():
+    """On the exhibition build this gesture carried a second meaning -- asleep
+    it woke the robot -- because there the tap was the only way in. Here the way
+    in is the button and a spoken sentence, so the wake is gone and the tap is
+    left saying exactly one thing, which is what a seven-minute briefing can
+    afford to explain."""
     src = open(os.path.join(ROOT, "noticebot_loop.py")).read()
     i = src.index('elif "BODYTAP" in line:')
     block = src[i:i + 1800]
-    assert 'flow.state == "S1_IDLE"' in block
-    assert 'player.request("S2_LISTEN")' in block, "the clip that lifts out of the bow"
-    assert 'player.arm_next("S1_IDLE")' in block, "or it holds facing the visitor"
-    assert 'events.append("tap")' in block, "every other state still means 'not that one'"
+    assert 'flow.state == "S1_IDLE"' not in block
+    assert 'player.request("S2_LISTEN")' not in block
+    assert 'events.append("tap")' in block
