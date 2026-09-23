@@ -1,0 +1,48 @@
+{
+  "source": "Untitled_Artwork 5.jpg",
+  "side": "right",
+  "erased": [
+    "1690,600,1860,700",
+    "1700,430,1790,560"
+  ],
+  "body_px": [
+    278,
+    627
+  ],
+  "aspect": 0.4433811802232855,
+  "parts": {
+    "base": {
+      "file": "base.png",
+      "x": 0.0,
+      "y": 0.5885167464114832,
+      "w": 1.0,
+      "h": 0.41148325358851673
+    },
+    "neck": {
+      "file": "neck.png",
+      "x": 0.0,
+      "y": 0.39872408293460926,
+      "w": 1.0,
+      "h": 0.215311004784689
+    },
+    "head": {
+      "file": "head.png",
+      "x": 0.0,
+      "y": 0.0,
+      "w": 1.0,
+      "h": 0.45933014354066987
+    }
+  },
+  "head_pivot": [
+    0.4,
+    0.43
+  ],
+  "neck_pivot": [
+    0.36,
+    0.63
+  ],
+  "ref_state": "S2_LISTEN",
+  "ref_tilt": -28.0,
+  "ref_nod": 53.0,
+  "_note": "Pivots and cuts are fractions of the body bounding box. Nudge them here rather than in the figure script; the figure reads this file and never hard-codes a pixel."
+}

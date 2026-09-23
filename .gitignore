@@ -56,3 +56,15 @@ docs/inspiration.md
 
 # S1 filming logs -- run output, like session_feed/. Kept on disk, out of the repo.
 film_log_*.json
+
+# --- the traced robot drawing ---------------------------------------------
+# motion/robot_art/ holds Cassie's own drawing and the three pieces cut out of
+# it, and the figure script rotates those pieces by the angles in the clip
+# CSVs. The SOURCE .jpg is kept beside them despite the blanket *.jpg rule
+# above: parts.json records its filename and the erase rectangles used, so with
+# the jpg the cut is reproducible and without it the pieces are unexplainable
+# artefacts. _cuts_debug.png is not kept -- it is a --debug render of the cut
+# lines, it is regenerated in a second, and a stale copy of it would show cuts
+# the parts no longer have.
+!motion/robot_art/*.jpg
+motion/robot_art/_cuts_debug.png
